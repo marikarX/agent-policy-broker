@@ -189,7 +189,7 @@ Responsibilities:
 
 - combine structured policy matches, path-scoped instructions, and semantic retrieval candidates
 - remove duplicate or generic guidance
-- prefer specific guidance over broad guidance
+- prefer specific guidance over broad guidance within the same trust level
 - apply priority and safety rules
 - fit the result into a strict output budget
 - return source IDs for auditability
@@ -198,20 +198,23 @@ Responsibilities:
 
 When selected policies conflict, the broker should resolve or report the conflict.
 
-Suggested precedence:
+The canonical default precedence is defined in [Conflict resolution](conflict-resolution.md). Architecture, discovery, and retrieval docs should refer to that ordering instead of defining competing precedence models.
 
-1. global safety rules
-2. organization-wide rules
-3. domain- and risk-specific registry rules
-4. repository-specific registry rules
-5. directory or package-specific registry rules
-6. task-specific registry rules
-7. language and framework registry rules
-8. explicitly trusted repository instructions, broad to specific
-9. untrusted repository-local instructions and policies, broad to specific
-10. inferred conventions
+Summary:
 
-Global safety rules should always win. Reviewed registry policies should not be weakened by branch-controlled repository instructions. Repository-local instructions may refine workflow details when they do not conflict with higher-authority policy, and may outrank registry policy only when the source is explicitly configured as trusted. Otherwise, more specific policy usually wins over general policy within the same trust level.
+1. system, developer, and direct user instructions
+2. global safety policies
+3. organization-wide registry policies
+4. domain- and risk-specific registry policies
+5. repository-specific registry policies
+6. directory- and package-specific registry policies
+7. task-specific registry policies
+8. language, framework, and package-manager registry policies
+9. explicitly trusted repository-local instructions and policies, broad to specific
+10. untrusted repository-local instructions and policies, broad to specific
+11. inferred nearby conventions
+
+Global safety rules should always win. Reviewed registry policies should not be reduced by branch-controlled repository instructions. Repository-local instructions may refine workflow details when they do not conflict with higher-authority policy, and may outrank registry policy only when the source is explicitly configured as trusted. Otherwise, more specific policy usually wins over general policy within the same trust level.
 
 ### Renderer
 
@@ -257,19 +260,9 @@ output_budget:
 
 Candidates that do not fit the budget should be omitted, not appended, only when they are lower-priority, non-mandatory guidance. Global safety rules, mandatory required checks, blocked actions, and other safety-critical controls must not be trimmed solely because an untrusted caller supplied a small budget. Budgets should come from trusted broker or operator configuration; any budget hints accepted in intent input must be authorized or clamped to safe operator-defined minimums before use. If mandatory controls cannot fit, the broker should fail closed and report the budget violation. The response should optionally report how many non-mandatory candidate policies were considered and omitted.
 
-## Optional hosted service
+## Optional organization deployment
 
-The open-source core should work locally. A hosted or self-hosted service can later add:
-
-- centralized policy registry
-- organization-wide vector index
-- organization-wide rollout
-- approval workflows
-- audit logs
-- analytics
-- SSO and RBAC
-- GitHub/GitLab checks
-- compliance exports
+The open-source core should work locally. Future organization deployment patterns may add centralized registry, approval, audit, rollout, and integration capabilities. Public OSS docs should describe these as deployment patterns rather than pricing or packaging commitments.
 
 ## Why not make this fully agentic?
 
