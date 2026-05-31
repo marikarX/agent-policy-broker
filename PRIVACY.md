@@ -10,7 +10,7 @@ The repository is currently in the documentation and design phase. There is no i
 
 ## Local-first expectation
 
-The open-source core should be able to run locally without sending repository data, source code, prompts, policy files, or task intent to an external service.
+The open-source core should be able to run locally without sending repository data, source code, prompts, policy files, task intent, or retrieval indexes to an external service.
 
 A local invocation such as:
 
@@ -31,9 +31,23 @@ A local broker implementation may inspect local repository metadata such as:
 - package metadata such as `package.json`, `pyproject.toml`, `go.mod`, or similar files;
 - CI or test command configuration;
 - user-provided task summaries;
-- explicit file paths passed through CLI flags.
+- explicit file paths passed through CLI flags;
+- selected documentation paths explicitly included in a local retrieval index.
 
 The CLI should avoid reading full source files unless a feature explicitly requires it and the behavior is documented.
+
+## Local retrieval indexes
+
+A future local retrieval index may store embeddings or searchable representations of policy files and selected documentation.
+
+Local indexing should follow these rules:
+
+- indexing should be explicit;
+- indexed paths should be configurable;
+- source code should not be indexed by default;
+- generated index files should remain local unless the user explicitly moves or uploads them;
+- users should be able to delete and rebuild the index;
+- documentation should clearly explain what is indexed.
 
 ## Data that should not be collected by default
 
@@ -44,7 +58,8 @@ The open-source core should not collect or transmit by default:
 - private customer data;
 - full prompts or chat transcripts;
 - environment variables, except those explicitly required for configuration;
-- personally identifiable information beyond what is necessary for local operation.
+- personally identifiable information beyond what is necessary for local operation;
+- local vector indexes or retrieval caches.
 
 ## Remote service behavior
 
@@ -56,6 +71,7 @@ Remote mode should clearly disclose:
 - what request fields are sent;
 - whether file contents are sent;
 - whether task summaries are sent;
+- whether retrieval vectors, snippets, or index metadata are sent;
 - what metadata is logged;
 - how long logs are retained;
 - how users can disable remote mode;
@@ -73,7 +89,7 @@ If telemetry is introduced later, it should be:
 - documented in this file;
 - configurable through environment variables or config files;
 - limited to operational metadata;
-- free of source code, secrets, and private policy contents.
+- free of source code, secrets, private policy contents, and local retrieval indexes.
 
 ## Logs
 
