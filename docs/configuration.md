@@ -30,16 +30,6 @@ instruction_sources:
   exclude:
     - node_modules/**
     - vendor/**
-  trusted:
-    - AGENTS.md
-
-check_definitions:
-  typescript.lint:
-    command: npm run lint
-    trust: registry
-  typescript.typecheck:
-    command: npm run typecheck
-    trust: registry
 
 index:
   include:
@@ -128,19 +118,19 @@ instruction_sources:
   exclude:
     - node_modules/**
     - vendor/**
-  trusted:
-    - AGENTS.md
 ```
 
 Instruction sources are path-scoped. A file at `backend/AGENTS.md` applies to `backend/**`.
 
-The optional `trusted` list marks instruction sources that may participate at the trusted repository-local precedence level. This should be used carefully. Branch-controlled files should be treated as untrusted unless the deployment has a review model that makes the path authoritative.
+Repository-local configuration should list instruction files to discover, not promote those files to trusted precedence. The optional `trusted` list is reserved for trusted operator or deployment configuration that is outside branch-controlled repository contents. Branch-controlled files should be treated as untrusted unless the deployment has a review model that makes the path authoritative.
 
 MVP implementations may support only exact path entries in `trusted`. Later versions may support glob patterns and source classes.
 
 ## `check_definitions`
 
-Maps required check IDs from policies to trusted commands.
+Maps required check IDs from policies to trusted commands. These definitions belong in trusted registry or explicitly supplied operator configuration, not in branch-controlled repository-local `.agent-policy.yaml` files.
+
+Trusted/operator configuration example:
 
 ```yaml
 check_definitions:
