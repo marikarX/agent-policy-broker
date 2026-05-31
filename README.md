@@ -26,6 +26,7 @@ This repository is in the documentation and design phase. The current focus is d
 
 - policy schema
 - CLI behavior
+- configuration model
 - agent bootstrap patterns
 - layered instruction discovery for nested repo guidance
 - inspection and migration of existing repo instructions
@@ -165,15 +166,22 @@ The broker may return:
 
 - [Getting started](docs/getting-started.md)
 - [Architecture](docs/architecture.md)
+- [CLI reference](docs/cli-reference.md)
+- [Configuration](docs/configuration.md)
 - [Instruction discovery and layered guidance](docs/instruction-discovery.md)
 - [Repository inspection and migration](docs/repo-inspection-and-migration.md)
+- [Retrieval and ranking](docs/retrieval-and-ranking.md)
+- [Conflict resolution](docs/conflict-resolution.md)
 - [Context budgeting and retrieval](docs/context-budgeting.md)
 - [Storage and indexing model](docs/storage-and-indexing.md)
 - [Registry mode and WSL workflow](docs/registry-mode.md)
 - [Policy schema](docs/policy-schema.md)
 - [Agent integration](docs/agent-integration.md)
+- [Project scope](docs/project-scope.md)
+- [Threat model](docs/threat-model.md)
 - [Roadmap](docs/roadmap.md)
 - [Privacy](PRIVACY.md)
+- [Security](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
 
 ## Repository layout
@@ -184,16 +192,23 @@ The broker may return:
 ├── CONTRIBUTING.md
 ├── LICENSE
 ├── PRIVACY.md
+├── SECURITY.md
 ├── docs/
 │   ├── architecture.md
 │   ├── agent-integration.md
+│   ├── cli-reference.md
+│   ├── configuration.md
+│   ├── conflict-resolution.md
 │   ├── context-budgeting.md
 │   ├── getting-started.md
 │   ├── instruction-discovery.md
 │   ├── policy-schema.md
+│   ├── project-scope.md
 │   ├── registry-mode.md
 │   ├── repo-inspection-and-migration.md
+│   ├── retrieval-and-ranking.md
 │   ├── storage-and-indexing.md
+│   ├── threat-model.md
 │   └── roadmap.md
 └── examples/
     ├── AGENTS.md
