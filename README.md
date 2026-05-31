@@ -14,6 +14,7 @@ The broker can select policies based on structured intent and repository context
 - language and framework
 - package manager
 - risk area, such as auth, payments, migrations, public APIs, generated code, or security-sensitive paths
+- existing path-scoped instruction files such as nested `AGENTS.md`, `CLAUDE.md`, Cursor rules, and Copilot instructions
 - semantically relevant docs, review comments, postmortems, and policy snippets
 - required validation commands
 
@@ -26,6 +27,7 @@ This repository is in the documentation and design phase. The current focus is d
 - policy schema
 - CLI behavior
 - agent bootstrap patterns
+- layered instruction discovery for nested repo guidance
 - hybrid retrieval and context budgeting
 - deterministic policy selection
 - instruction bundle compilation
@@ -44,6 +46,7 @@ Agent Policy Broker proposes a lightweight control plane:
 ```text
 AGENTS.md / CLAUDE.md / editor rules
         -> run agent-policy get
+        -> broker discovers applicable nested instructions
         -> broker retrieves candidate guidance
         -> broker ranks and compiles concise instructions
         -> agent receives compact policy bundle
@@ -55,7 +58,7 @@ AGENTS.md / CLAUDE.md / editor rules
 Agent Policy Broker is not just a document retriever. It is an instruction compiler.
 
 ```text
-raw policies + docs + review knowledge
+raw policies + docs + nested instructions + review knowledge
         -> hybrid retrieval
         -> policy scoring
         -> deduplication
@@ -70,6 +73,7 @@ The intended design is hybrid:
 ```text
 vector retrieval for recall
 + exact metadata filters for precision
++ path-scoped instruction discovery
 + deterministic policy priority
 + output budgets
 = small, high-signal agent instructions
@@ -160,6 +164,7 @@ The broker may return:
 
 - [Getting started](docs/getting-started.md)
 - [Architecture](docs/architecture.md)
+- [Instruction discovery and layered guidance](docs/instruction-discovery.md)
 - [Context budgeting and retrieval](docs/context-budgeting.md)
 - [Storage and indexing model](docs/storage-and-indexing.md)
 - [Registry mode and WSL workflow](docs/registry-mode.md)
@@ -182,6 +187,7 @@ The broker may return:
 │   ├── agent-integration.md
 │   ├── context-budgeting.md
 │   ├── getting-started.md
+│   ├── instruction-discovery.md
 │   ├── policy-schema.md
 │   ├── registry-mode.md
 │   ├── storage-and-indexing.md
@@ -197,12 +203,13 @@ The broker may return:
 
 1. **Less context, stronger signal**: return only the guidance that matters for the current task.
 2. **Retrieve broadly, compile narrowly**: use semantic retrieval and structured matching internally, but do not dump raw documents into the agent context.
-3. **Deterministic first**: policy selection should be explainable and reproducible.
-4. **Policy as code**: policies should be versioned, reviewed, and owned.
-5. **Indexes are derived artifacts**: metadata, BM25, and vector indexes accelerate retrieval but do not replace the Git policy registry as source of truth.
-6. **Local-first**: the open-source core should work without a hosted service.
-7. **Vendor-neutral**: support Codex, Claude Code, Copilot, Cursor, and other coding agents through simple command execution first.
-8. **Auditable**: every returned instruction should be traceable to a source policy.
+3. **Respect existing repo guidance**: discover nested instruction files and treat them as path-scoped inputs instead of overwriting them.
+4. **Deterministic first**: policy selection should be explainable and reproducible.
+5. **Policy as code**: policies should be versioned, reviewed, and owned.
+6. **Indexes are derived artifacts**: metadata, BM25, and vector indexes accelerate retrieval but do not replace the Git policy registry as source of truth.
+7. **Local-first**: the open-source core should work without a hosted service.
+8. **Vendor-neutral**: support Codex, Claude Code, Copilot, Cursor, and other coding agents through simple command execution first.
+9. **Auditable**: every returned instruction should be traceable to a source policy.
 
 ## License
 
