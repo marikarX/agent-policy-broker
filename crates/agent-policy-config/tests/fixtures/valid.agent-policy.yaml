@@ -1,0 +1,36 @@
+registry:
+  type: git
+  url: git@github.com:company/agent-policy-registry.git
+  ref: main
+  cache_dir: ~/.cache/agent-policy/registries/company
+  sync:
+    mode: auto
+    max_age_minutes: 15
+
+local_policies:
+  - .agent-policy/policies
+
+instruction_sources:
+  include:
+    - AGENTS.md
+    - "**/AGENTS.md"
+  exclude:
+    - node_modules/**
+  trusted:
+    - /etc/agent-policy/trusted-instructions
+
+index:
+  include:
+    - .agent-policy/policies
+    - docs
+  exclude:
+    - src
+    - node_modules
+
+output_budget:
+  max_tokens: 1024
+  max_instructions: 6
+  max_required_checks: 3
+  max_blocked_actions: 2
+  include_examples: true
+  include_explanations: full

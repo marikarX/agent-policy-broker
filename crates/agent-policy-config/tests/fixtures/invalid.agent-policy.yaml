@@ -1,0 +1,5 @@
+registry:
+  type: git
+  url: git@github.com:company/agent-policy-registry.git
+  sync:
+    mode: [auto
