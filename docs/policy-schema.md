@@ -2,7 +2,7 @@
 
 This document defines the draft policy schema for Agent Policy Broker.
 
-Policies should be small, versioned modules. A policy should describe when it applies, what instructions it contributes, what checks it requires, and which actions it blocks.
+Policies should be small, versioned modules. A policy should describe when it applies, what instructions it contributes, what trusted checks it requires, and which actions it blocks.
 
 The broker may retrieve many candidate policies and knowledge snippets internally, but it should return only a concise instruction bundle that fits the configured context budget.
 
@@ -136,11 +136,11 @@ Required list of strings. These are candidate instructions returned to the codin
 
 Instructions should be:
 
-- specific
-- actionable
-- short
-- testable when possible
-- scoped to the policy's domain
+- specific;
+- actionable;
+- short;
+- testable when possible;
+- scoped to the policy's domain.
 
 Avoid generic advice such as "write clean code".
 
@@ -157,6 +157,32 @@ required_checks:
   - typescript.lint
   - payments.unit_tests
 ```
+
+### Trusted check definitions
+
+Check IDs should resolve through trusted configuration, not through arbitrary repository-local policy text.
+
+Example trusted check registry:
+
+```yaml
+check_definitions:
+  typescript.lint:
+    command: npm run lint
+    trust: registry
+    description: Run the repository lint command.
+  typescript.typecheck:
+    command: npm run typecheck
+    trust: registry
+    description: Run TypeScript type checking.
+  payments.unit_tests:
+    command: npm test -- tests/payments
+    trust: registry
+    description: Run payment unit tests.
+```
+
+MVP implementations may return unresolved check IDs instead of commands. That is safer than executing unresolved or branch-controlled command text.
+
+Parameterized checks may be supported later, but the parameter source must be constrained. For example, a test-path parameter should be selected from touched files or trusted package metadata, not arbitrary prompt text.
 
 ### `blocked_actions`
 
@@ -226,7 +252,7 @@ The broker should accept an intent object like this:
     "package_manager": "npm"
   },
   "risk_flags": ["payments"],
-  "expected_commands": ["npm test"]
+  "expected_commands": ["npm test"],
   "expected_check_ids": ["typescript.unit_tests"],
   "output_budget": {
     "max_tokens": 900,
@@ -244,6 +270,19 @@ Intent data is often derived from task text, repository contents, pull requests,
 
 Implementations should keep output budgets in trusted broker or operator configuration. If a deployment accepts budget hints in an intent object, it must validate the caller's authority and clamp each value to safe operator-defined minimums before selection or rendering. In particular, `max_required_checks` and `max_blocked_actions` must not be allowed to suppress mandatory checks, blocked actions, global safety policies, or other safety-critical controls. If mandatory controls cannot fit in the configured budget, the broker should fail closed rather than returning a weakened bundle.
 
+### Token estimation
+
+The broker should treat token counting as approximate and provider-neutral in the OSS core.
+
+Recommended MVP behavior:
+
+1. estimate output size using a deterministic byte or word-count heuristic;
+2. report the estimate method in debug or bundle metadata;
+3. trim only lower-priority non-mandatory guidance;
+4. never trim mandatory safety controls, blocked actions, or required checks solely because the estimate is high.
+
+A future implementation may add provider-specific tokenizers behind optional features, but the default behavior should remain deterministic and local.
+
 ## Instruction bundle schema
 
 The broker should return an instruction bundle like this:
@@ -257,6 +296,7 @@ The broker should return an instruction bundle like this:
   "context_budget": {
     "max_tokens": 900,
     "estimated_tokens": 420,
+    "estimate_method": "approx_words",
     "candidate_policies_considered": 14,
     "candidate_policies_omitted": 9,
     "reason": "Lower priority or duplicate non-mandatory guidance excluded by context budget."
@@ -276,11 +316,13 @@ The broker should return an instruction bundle like this:
   "required_checks": [
     {
       "id": "typescript.lint",
-      "source": "lang.typescript.base@1"
+      "source": "lang.typescript.base@1",
+      "resolved": false
     },
     {
       "id": "payments.unit_tests",
-      "source": "domain.payments.testing@2"
+      "source": "domain.payments.testing@2",
+      "resolved": false
     }
   ],
   "blocked_actions": [
@@ -303,9 +345,7 @@ The broker should return an instruction bundle like this:
 
 ## Open questions
 
-- Should trusted check definitions support parameterized arguments such as test-path selectors?
-- How should agents display unresolved check identifiers without encouraging unsafe command execution?
-- Should policy conflicts fail closed or return warnings?
-- How should inherited organization-level policies be represented?
-- Which local vector index backend should the open-source core support first?
-- How should the broker measure estimated instruction tokens across providers?
+- Should trusted check definitions support parameterized arguments such as test-path selectors in v1, or remain unresolved identifiers until a later release?
+- Should policy conflicts fail closed by default or return warnings for non-safety conflicts?
+- How should inherited organization-level policies be represented in bundle provenance?
+- Which local vector index backend should the open-source core support first after exact matching and BM25 are stable?
