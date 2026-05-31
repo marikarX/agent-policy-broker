@@ -9,6 +9,7 @@ This roadmap is intentionally small and implementation-oriented.
 - Draft policy schema
 - Document agent integration patterns
 - Add example policies and bootstrap files
+- Document context budgeting and retrieval strategy
 
 ## Phase 1: Local CLI MVP
 
@@ -22,6 +23,7 @@ Planned capabilities:
 - accept task intent through JSON input
 - detect basic repository metadata
 - match policies by language, framework, path, task type, and risk flag
+- apply a simple output budget such as max instructions and max checks
 - return JSON or Markdown instruction bundles
 - include source policy IDs and versions
 - provide safe failure behavior
@@ -36,6 +38,7 @@ Planned capabilities:
 - warnings for overly broad policies
 - detection of duplicate policy IDs
 - basic conflict checks
+- warnings when policies are likely to exceed context budgets
 
 ## Phase 3: Better context detection
 
@@ -48,7 +51,20 @@ Planned capabilities:
 - map files to likely language/framework/domain
 - support generated-file and sensitive-path configuration
 
-## Phase 4: PR and CI integration
+## Phase 4: Local retrieval index
+
+Goal: improve recall without sending repository data to a hosted service.
+
+Planned capabilities:
+
+- `agent-policy index`
+- local index over policy files and selected documentation
+- semantic lookup for policy `retrieval.semantic_terms`
+- hybrid retrieval combining exact metadata and semantic similarity
+- deduplication of overlapping instructions
+- omission reporting for candidates excluded by the context budget
+
+## Phase 5: PR and CI integration
 
 Planned capabilities:
 
@@ -56,8 +72,9 @@ Planned capabilities:
 - PR comment showing selected policies
 - required checks derived from selected policy bundle
 - policy drift detection for repos missing bootstrap files
+- report candidate policies considered and omitted
 
-## Phase 5: Optional MCP server
+## Phase 6: Optional MCP server
 
 Planned capabilities:
 
@@ -65,11 +82,12 @@ Planned capabilities:
 - expose selected policies as MCP resources
 - support coding agents that prefer native tool calls over command execution
 
-## Phase 6: Organization control plane
+## Phase 7: Organization control plane
 
 Potential paid or separately deployed capabilities:
 
 - central policy registry
+- organization-wide vector or semantic index
 - policy approvals
 - audit logs
 - SSO and RBAC
@@ -80,7 +98,7 @@ Potential paid or separately deployed capabilities:
 ## Out of scope for early versions
 
 - fully autonomous policy-writing agents
-- vector database as a default dependency
+- raw vector-search dumps into agent context
 - hosted-only operation
 - replacing CI, tests, code review, or security review
 - general-purpose agent orchestration
