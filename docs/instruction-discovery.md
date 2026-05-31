@@ -4,6 +4,8 @@ Many repositories already contain agent instruction files in subdirectories. Age
 
 The broker should treat existing instruction files as path-scoped guidance sources that can be discovered, indexed, summarized, and merged with registry policies.
 
+For auditing and migrating existing repositories, see [Repository inspection and migration](repo-inspection-and-migration.md).
+
 ## Supported instruction sources
 
 Common sources include:
@@ -171,6 +173,8 @@ Migration flow:
 ```
 
 The project should support gradual migration. Teams should not need to delete existing instruction files on day one.
+
+For a detailed audit and migration workflow, see [Repository inspection and migration](repo-inspection-and-migration.md).
 
 ## Other important use cases
 
