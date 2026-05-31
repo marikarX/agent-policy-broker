@@ -40,11 +40,11 @@ Expected output:
   "instructions": [
     "Preserve refund idempotency semantics.",
     "Add tests for provider retry and duplicate refund request.",
-    "Run the required checks before final response."
+    "Run required check IDs only when they resolve through trusted configuration."
   ],
   "required_checks": [
-    "npm run lint",
-    "npm test -- tests/payments"
+    { "id": "typescript.lint", "source": "lang.typescript.v4" },
+    { "id": "payments.unit_tests", "source": "domain.payments.v7" }
   ],
   "sources": [
     "domain.payments.v7",

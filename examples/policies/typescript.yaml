@@ -20,8 +20,8 @@ instructions:
   - Update tests when behavior changes.
 
 required_checks:
-  - npm run typecheck
-  - npm test
+  - typescript.typecheck
+  - typescript.unit_tests
 
 blocked_actions:
   - Do not edit generated files directly.

@@ -23,7 +23,7 @@ instructions:
   - Do not change settlement or reconciliation behavior unless the task explicitly requires it.
 
 required_checks:
-  - npm test -- tests/payments
+  - payments.unit_tests
 
 blocked_actions:
   - Do not edit payment provider credentials.
