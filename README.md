@@ -108,6 +108,8 @@ The broker may return:
 - [Policy schema](docs/policy-schema.md)
 - [Agent integration](docs/agent-integration.md)
 - [Roadmap](docs/roadmap.md)
+- [Privacy](PRIVACY.md)
+- [Contributing](CONTRIBUTING.md)
 
 ## Repository layout
 
@@ -115,6 +117,8 @@ The broker may return:
 .
 ├── README.md
 ├── CONTRIBUTING.md
+├── LICENSE
+├── PRIVACY.md
 ├── docs/
 │   ├── architecture.md
 │   ├── agent-integration.md
@@ -124,6 +128,7 @@ The broker may return:
 └── examples/
     ├── AGENTS.md
     └── policies/
+        ├── payments.yaml
         └── typescript.yaml
 ```
 
@@ -138,4 +143,4 @@ The broker may return:
 
 ## License
 
-No license has been selected yet. Add one before accepting external contributions.
+Agent Policy Broker is licensed under the [MIT License](LICENSE).
