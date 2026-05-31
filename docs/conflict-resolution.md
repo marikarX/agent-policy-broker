@@ -4,6 +4,8 @@ Agent Policy Broker should resolve or report conflicts between policies, nested 
 
 Conflict handling must be deterministic and auditable.
 
+This document is the canonical source for default precedence. Other docs should refer to this ordering instead of defining a separate one.
+
 ## Conflict types
 
 Common conflicts include:
@@ -23,15 +25,17 @@ Recommended default precedence:
 
 1. system, developer, and direct user instructions;
 2. global safety policies;
-3. organization policies from the registry;
-4. domain and risk policies from the registry;
+3. organization-wide registry policies;
+4. domain- and risk-specific registry policies;
 5. repository-specific registry policies;
-6. directory, language, framework, and task registry policies;
-7. explicitly trusted repository instructions, broad to specific;
-8. untrusted repository-local instructions and `.agent-policy` policies, broad to specific;
-9. inferred nearby conventions.
+6. directory- and package-specific registry policies;
+7. task-specific registry policies;
+8. language, framework, and package-manager registry policies;
+9. explicitly trusted repository-local instructions and policies, broad to specific;
+10. untrusted repository-local instructions and policies, broad to specific;
+11. inferred nearby conventions.
 
-Reviewed registry policies should not be weakened by branch-controlled local instructions. Local instructions may override registry policy only when the source is explicitly configured as trusted.
+Reviewed registry policies should not be reduced by branch-controlled local instructions. Local instructions may take precedence over registry policy only when the source is explicitly configured as trusted.
 
 ## Specificity rule
 
@@ -53,7 +57,7 @@ Safety constraints should win over convenience or local workflow instructions.
 Example:
 
 ```text
-Org policy: do not run destructive database commands
+Organization policy: avoid destructive database commands
 backend/AGENTS.md: reset database before tests
 ```
 
@@ -86,7 +90,7 @@ Example error:
     {
       "topic": "database_migration",
       "sources": ["org.migrations@3", "backend/AGENTS.md"],
-      "reason": "Local instruction weakens organization migration safety policy."
+      "reason": "Local instruction reduces organization migration safety policy."
     }
   ]
 }
@@ -118,7 +122,7 @@ Examples:
 
 - multiple active policies with same ID;
 - two active policies with mutually exclusive required commands for the same path;
-- local policies that weaken reviewed registry policies;
+- local policies that reduce reviewed registry policies;
 - nested instruction files with contradictory package-manager commands;
 - broad policies with missing path or risk constraints.
 
