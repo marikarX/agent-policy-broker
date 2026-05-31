@@ -7,6 +7,8 @@ Agent Policy Broker should support two storage modes:
 
 Registry mode is the recommended setup for teams with multiple repositories.
 
+The policy registry is the source of truth. Metadata, BM25, and vector indexes are derived artifacts built from the registry. For the detailed model, see [Storage and indexing model](storage-and-indexing.md).
+
 ## Why use a separate policy registry?
 
 A separate policy registry gives teams:
@@ -127,6 +129,7 @@ Recommended local layout:
     company/
       manifest.json
       metadata.sqlite
+      bm25.sqlite
       vectors/
   bundles/
     apb_2026-05-31_001.json
@@ -167,9 +170,26 @@ When `agent-policy get` runs inside WSL, the broker should:
 5. update or reuse the cached registry according to sync settings;
 6. read policy modules and registry docs;
 7. read application repository metadata;
-8. query the local retrieval index when available;
-9. compile a concise instruction bundle;
+8. query metadata, BM25, and vector indexes when available;
+9. rerank candidates and compile a concise instruction bundle;
 10. print JSON or Markdown to stdout.
+
+## Index lifecycle
+
+Indexes should be rebuilt from the registry, not edited by hand.
+
+Expected lifecycle:
+
+```text
+policy registry commit
+  -> agent-policy registry sync
+  -> agent-policy index
+  -> metadata/BM25/vector indexes
+  -> agent-policy get
+  -> concise instruction bundle
+```
+
+The index manifest should record the registry commit used. If the registry changes, the broker should warn or rebuild the affected indexes.
 
 ## Sync modes
 
@@ -221,6 +241,7 @@ Coding agent
   -> runs agent-policy get
   -> CLI reads app repo
   -> CLI reads cached policy registry
+  -> CLI queries derived indexes when available
   -> CLI outputs instruction bundle
 ```
 
