@@ -29,6 +29,7 @@ This repository is in the documentation and design phase. The current focus is d
 - hybrid retrieval and context budgeting
 - deterministic policy selection
 - instruction bundle compilation
+- registry mode for shared policy repositories
 - examples for common coding-agent workflows
 
 ## Why this exists
@@ -157,6 +158,7 @@ The broker may return:
 - [Getting started](docs/getting-started.md)
 - [Architecture](docs/architecture.md)
 - [Context budgeting and retrieval](docs/context-budgeting.md)
+- [Registry mode and WSL workflow](docs/registry-mode.md)
 - [Policy schema](docs/policy-schema.md)
 - [Agent integration](docs/agent-integration.md)
 - [Roadmap](docs/roadmap.md)
@@ -177,6 +179,7 @@ The broker may return:
 │   ├── context-budgeting.md
 │   ├── getting-started.md
 │   ├── policy-schema.md
+│   ├── registry-mode.md
 │   └── roadmap.md
 └── examples/
     ├── AGENTS.md
