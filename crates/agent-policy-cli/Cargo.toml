@@ -1,0 +1,17 @@
+[package]
+name = "agent-policy-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "agent-policy"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+agent-policy-core = { path = "../agent-policy-core" }
+agent-policy-config = { path = "../agent-policy-config" }
+agent-policy-discover = { path = "../agent-policy-discover" }
