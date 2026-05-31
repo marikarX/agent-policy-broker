@@ -20,7 +20,7 @@ A separate policy registry gives teams:
 - cross-repository consistency;
 - less duplication across `AGENTS.md`, `CLAUDE.md`, Cursor rules, and Copilot instructions.
 
-Application repositories keep only a small bootstrap file and a pointer to the registry.
+Application repositories keep only a small bootstrap file and local policy hints. Registry URLs, refs, cache locations, and sync behavior must come from trusted operator-controlled configuration, not from branch-controlled repository files.
 
 ## Repository layout
 
@@ -82,17 +82,11 @@ agent-policy get --repo . --task "$USER_TASK"
 Follow the returned instruction bundle unless it conflicts with higher-priority instructions.
 ```
 
-Example `.agent-policy.yaml`:
+Example repository-local `.agent-policy.yaml`:
 
 ```yaml
 registry:
-  type: git
-  url: git@github.com:company/agent-policy-registry.git
-  ref: main
-  cache_dir: ~/.cache/agent-policy/registries/company
-  sync:
-    mode: auto
-    max_age_minutes: 15
+  id: company
 
 local_policies:
   - .agent-policy/policies
@@ -105,6 +99,22 @@ index:
     - src
     - secrets
     - node_modules
+```
+
+The repository-local file may select only an operator-defined registry `id`. The broker must resolve that `id` through trusted configuration such as `/etc/agent-policy/registries.yaml`, `$XDG_CONFIG_HOME/agent-policy/registries.yaml`, or CI-managed protected settings. It must reject repo-provided registry URLs, refs, cache directories, or sync modes unless they exactly match the trusted allowlist.
+
+Trusted operator configuration example:
+
+```yaml
+registries:
+  company:
+    type: git
+    url: git@github.com:company/agent-policy-registry.git
+    ref: main
+    cache_dir: ~/.cache/agent-policy/registries/company
+    sync:
+      mode: auto
+      max_age_minutes: 15
 ```
 
 ## WSL setup
@@ -164,15 +174,17 @@ agent-policy get --repo . --task "$USER_TASK"
 When `agent-policy get` runs inside WSL, the broker should:
 
 1. read the application repository path;
-2. load `.agent-policy.yaml`;
-3. resolve the registry URL and ref;
-4. ensure the registry is cloned locally;
-5. update or reuse the cached registry according to sync settings;
-6. read policy modules and registry docs;
-7. read application repository metadata;
-8. query metadata, BM25, and vector indexes when available;
-9. rerank candidates and compile a concise instruction bundle;
-10. print JSON or Markdown to stdout.
+2. load trusted operator registry configuration;
+3. load `.agent-policy.yaml` for local policy hints and an optional registry `id`;
+4. resolve the registry URL, ref, cache location, and sync settings only from trusted configuration;
+5. reject or ignore any repo-local attempt to provide or override registry URL, ref, cache location, or sync settings;
+6. ensure the trusted registry is cloned locally;
+7. update or reuse the cached registry according to trusted sync settings;
+8. read policy modules and registry docs;
+9. read application repository metadata;
+10. query metadata, BM25, and vector indexes when available;
+11. rerank candidates and compile a concise instruction bundle;
+12. print JSON or Markdown to stdout.
 
 ## Index lifecycle
 
@@ -193,13 +205,14 @@ The index manifest should record the registry commit used. If the registry chang
 
 ## Sync modes
 
-The registry should support explicit sync behavior.
+Trusted registry configuration should support explicit sync behavior. Branch-controlled repository files must not be allowed to choose `auto` sync or change the registry source.
 
 ```yaml
-registry:
-  sync:
-    mode: auto
-    max_age_minutes: 15
+registries:
+  company:
+    sync:
+      mode: auto
+      max_age_minutes: 15
 ```
 
 Recommended modes:
@@ -209,15 +222,16 @@ Recommended modes:
 - `pinned`: use an exact commit SHA and do not auto-update;
 - `offline`: use local cache only.
 
-Pinned example:
+Pinned trusted-configuration example:
 
 ```yaml
-registry:
-  type: git
-  url: git@github.com:company/agent-policy-registry.git
-  ref: 9d3c5f1a7b2e
-  sync:
-    mode: pinned
+registries:
+  company:
+    type: git
+    url: git@github.com:company/agent-policy-registry.git
+    ref: 9d3c5f1a7b2e
+    sync:
+      mode: pinned
 ```
 
 Instruction bundles should report the registry commit used:
@@ -293,7 +307,7 @@ HTTPS with a Git credential manager can also work, but SSH is usually simpler in
 
 ## Precedence
 
-Recommended policy precedence:
+Recommended policy precedence, after registry identity and source have been resolved from trusted configuration:
 
 1. global safety policy;
 2. organization policies from the registry;
@@ -302,4 +316,4 @@ Recommended policy precedence:
 5. repository-local policies;
 6. conventions inferred from nearby code.
 
-Repository-local policies should be able to extend shared policy. They should not weaken reviewed registry policies unless the local source is explicitly configured as trusted.
+Repository-local policies should be able to extend shared policy from the trusted registry. They should not weaken global safety policies or cause an untrusted registry to be treated as shared policy.
