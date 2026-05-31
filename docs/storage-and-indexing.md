@@ -63,7 +63,7 @@ Example local cache:
     company/
       manifest.json
       metadata.sqlite
-      bm25.sqlite
+      bm25.tantivy/
       vectors/
 ```
 
@@ -94,6 +94,8 @@ The metadata index helps enforce governance rules such as `status: active` and p
 ## BM25 / keyword index
 
 The BM25 index supports keyword-based retrieval.
+
+The recommended OSS implementation is a Tantivy index stored as a directory, for example `bm25.tantivy/`. The docs should not imply SQLite FTS unless a future implementation intentionally chooses that backend.
 
 It is useful for exact or near-exact words such as:
 
@@ -171,7 +173,7 @@ Example `manifest.json`:
   },
   "indexes": {
     "metadata": "metadata.sqlite",
-    "bm25": "bm25.sqlite",
+    "bm25": "bm25.tantivy/",
     "vector": "vectors/"
   },
   "created_at": "2026-05-31T18:00:00Z"
@@ -189,7 +191,7 @@ The main conflicts are operational, not architectural.
 | Index is stale | Store registry commit in manifest and rebuild when it changes. |
 | Vector search finds deprecated policy | Filter by metadata such as `status: active`. |
 | Semantic result is plausible but low authority | Rerank lower unless metadata also matches. |
-| Repo-local policy weakens reviewed registry policy | Precedence rules prevent branch-controlled local policy from weakening registry policy unless explicitly trusted. |
+| Repo-local policy reduces reviewed registry policy | Precedence rules prevent branch-controlled local policy from reducing registry policy unless explicitly trusted. |
 | Sensitive docs get indexed | Require explicit include paths and safe defaults. |
 | Indexes disagree | Deterministic compiler decides final bundle. |
 
