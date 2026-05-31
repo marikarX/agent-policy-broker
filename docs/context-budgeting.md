@@ -6,6 +6,8 @@ Agent Policy Broker is built around one assumption:
 
 The broker should avoid dumping raw docs, handbook pages, old instruction files, or search results into the agent context. Instead, it should retrieve broadly and compile narrowly.
 
+For the storage model behind retrieval indexes, see [Storage and indexing model](storage-and-indexing.md).
+
 ## Core model
 
 ```text
