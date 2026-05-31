@@ -132,7 +132,7 @@ All fields are optional inside `applies_when`, but a policy with no match criter
 
 ### `instructions`
 
-Required list of strings. These are candidate instructions returned to the coding agent when the policy applies and when the instruction survives ranking, deduplication, and the context budget.
+Required list of strings. These are candidate instructions returned to the coding agent when the policy applies and when the instruction survives ranking, deduplication, and the context budget. Instructions from global safety policies or other safety-critical policies are mandatory controls: they must be returned or the broker must fail closed instead of silently omitting them.
 
 Instructions should be:
 
@@ -146,7 +146,7 @@ Avoid generic advice such as "write clean code".
 
 ### `required_checks`
 
-Optional list of commands or check identifiers.
+Optional list of commands or check identifiers. Required checks from selected safety-critical policies are mandatory controls. A context or output budget must not drop them solely to satisfy a caller-provided limit; if the bundle cannot include mandatory checks, the broker should fail closed and report the budget violation.
 
 Example:
 
@@ -158,7 +158,7 @@ required_checks:
 
 ### `blocked_actions`
 
-Optional list of actions that the agent should not perform.
+Optional list of actions that the agent should not perform. Blocked actions from selected safety-critical policies are mandatory controls. A context or output budget must not drop them solely to satisfy a caller-provided limit; if the bundle cannot include mandatory blocked actions, the broker should fail closed and report the budget violation.
 
 Example:
 
@@ -224,16 +224,15 @@ The broker should accept an intent object like this:
     "package_manager": "npm"
   },
   "risk_flags": ["payments"],
-  "expected_commands": ["npm test"],
-  "output_budget": {
-    "max_tokens": 900,
-    "max_instructions": 8,
-    "max_required_checks": 4,
-    "max_blocked_actions": 4,
-    "include_explanations": "compact"
-  }
+  "expected_commands": ["npm test"]
 }
 ```
+
+### Budget and trust constraints
+
+Intent data is often derived from task text, repository contents, pull requests, issues, or bootstrap instructions, so it should be treated as untrusted unless the deployment explicitly authenticates it as operator-controlled configuration. The broker must not honor caller-provided `output_budget` limits directly from untrusted intent.
+
+Implementations should keep output budgets in trusted broker or operator configuration. If a deployment accepts budget hints in an intent object, it must validate the caller's authority and clamp each value to safe operator-defined minimums before selection or rendering. In particular, `max_required_checks` and `max_blocked_actions` must not be allowed to suppress mandatory checks, blocked actions, global safety policies, or other safety-critical controls. If mandatory controls cannot fit in the configured budget, the broker should fail closed rather than returning a weakened bundle.
 
 ## Instruction bundle schema
 
@@ -250,7 +249,7 @@ The broker should return an instruction bundle like this:
     "estimated_tokens": 420,
     "candidate_policies_considered": 14,
     "candidate_policies_omitted": 9,
-    "reason": "Lower priority or duplicate guidance excluded by context budget."
+    "reason": "Lower priority or duplicate non-mandatory guidance excluded by context budget."
   },
   "instructions": [
     {

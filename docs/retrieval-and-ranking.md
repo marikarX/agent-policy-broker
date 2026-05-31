@@ -154,7 +154,7 @@ output_budget:
   max_blocked_actions: 4
 ```
 
-When over budget, omit lower-scoring or redundant candidates.
+When over budget, omit lower-scoring or redundant non-mandatory candidates. Mandatory safety controls, required checks, and blocked actions must not be omitted solely to satisfy an untrusted or too-small budget; include them first or fail closed with an explicit budget violation.
 
 The broker should optionally report omission statistics:
 
@@ -162,13 +162,13 @@ The broker should optionally report omission statistics:
 {
   "candidate_policies_considered": 14,
   "candidate_policies_omitted": 9,
-  "reason": "Lower priority or duplicate guidance excluded by context budget."
+  "reason": "Lower priority or duplicate non-mandatory guidance excluded by context budget."
 }
 ```
 
 ## Required checks
 
-Required checks should be ranked too.
+Required checks should be ranked too, but checks marked mandatory by selected safety-critical policies are not ordinary trim candidates.
 
 Prefer:
 
