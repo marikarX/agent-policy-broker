@@ -154,7 +154,7 @@ output_budget:
   include_explanations: compact
 ```
 
-The broker should omit lower-priority candidates instead of exceeding the budget.
+The broker should omit lower-priority non-mandatory candidates instead of exceeding the budget. Budget values that can be influenced by a repository branch, pull request, issue, task prompt, or other untrusted source must be authorized or clamped to safe operator-defined minimums before use. They must not reduce `max_required_checks`, `max_blocked_actions`, or token limits enough to hide global safety rules, mandatory validation commands, blocked actions, or other safety-critical controls; if mandatory controls cannot fit, the broker should fail closed.
 
 ## Configuration precedence
 
@@ -166,7 +166,7 @@ Recommended precedence, from highest to lowest:
 4. registry `config.yaml`;
 5. built-in defaults.
 
-Higher-precedence configuration may narrow output or choose a specific registry ref. It should not weaken global safety or reviewed registry policy behavior.
+Higher-precedence trusted configuration may narrow output or choose a specific registry ref. Configuration from untrusted repository branches or task-controlled inputs must not weaken global safety or reviewed registry policy behavior, and any accepted budget hints must be clamped to safe operator-defined minimums.
 
 ## Safe defaults
 

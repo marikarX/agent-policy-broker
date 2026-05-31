@@ -136,7 +136,11 @@ output_budget:
   include_explanations: compact
 ```
 
-The budget forces prioritization. Lower-value guidance should be omitted, not appended.
+The budget forces prioritization. Lower-value, non-mandatory guidance should be omitted, not appended.
+
+Budgets are trusted broker or operator configuration, not untrusted task input. If an implementation accepts budget hints from an intent object, it must first authenticate that the caller is allowed to set them or clamp the hints to safe operator-defined minimums. Untrusted callers must not be able to reduce `max_required_checks`, `max_blocked_actions`, or token limits enough to hide global safety rules, mandatory validation commands, blocked actions, or other safety-critical controls.
+
+Mandatory safety controls are outside ordinary trimming. The broker should include them before spending budget on lower-priority guidance; if they cannot fit in the configured budget, it should fail closed and report the budget violation instead of returning a weakened bundle.
 
 ## Scoring model
 
@@ -197,7 +201,7 @@ Example:
 }
 ```
 
-This helps users trust that missing policies were intentionally omitted, not accidentally ignored.
+This helps users trust that missing non-mandatory policies were intentionally omitted, not accidentally ignored. Omission reporting must distinguish ordinary candidate omissions from mandatory controls that could not fit and caused the broker to fail closed.
 
 ## Local vector index
 

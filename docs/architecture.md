@@ -234,7 +234,7 @@ Intent input
   -> scoring and reranking
   -> deduplication
   -> precedence/conflict resolution
-  -> context budget application
+  -> context budget application using trusted or safely clamped budget values
   -> instruction rendering
   -> audit metadata
 ```
@@ -255,7 +255,7 @@ output_budget:
   include_explanations: compact
 ```
 
-Candidates that do not fit the budget should be omitted, not appended. The response should optionally report how many candidate policies were considered and omitted.
+Candidates that do not fit the budget should be omitted, not appended, only when they are lower-priority, non-mandatory guidance. Global safety rules, mandatory required checks, blocked actions, and other safety-critical controls must not be trimmed solely because an untrusted caller supplied a small budget. Budgets should come from trusted broker or operator configuration; any budget hints accepted in intent input must be authorized or clamped to safe operator-defined minimums before use. If mandatory controls cannot fit, the broker should fail closed and report the budget violation. The response should optionally report how many non-mandatory candidate policies were considered and omitted.
 
 ## Optional hosted service
 
