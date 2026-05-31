@@ -28,6 +28,7 @@ This repository is in the documentation and design phase. The current focus is d
 - CLI behavior
 - agent bootstrap patterns
 - layered instruction discovery for nested repo guidance
+- inspection and migration of existing repo instructions
 - hybrid retrieval and context budgeting
 - deterministic policy selection
 - instruction bundle compilation
@@ -165,6 +166,7 @@ The broker may return:
 - [Getting started](docs/getting-started.md)
 - [Architecture](docs/architecture.md)
 - [Instruction discovery and layered guidance](docs/instruction-discovery.md)
+- [Repository inspection and migration](docs/repo-inspection-and-migration.md)
 - [Context budgeting and retrieval](docs/context-budgeting.md)
 - [Storage and indexing model](docs/storage-and-indexing.md)
 - [Registry mode and WSL workflow](docs/registry-mode.md)
@@ -190,6 +192,7 @@ The broker may return:
 │   ├── instruction-discovery.md
 │   ├── policy-schema.md
 │   ├── registry-mode.md
+│   ├── repo-inspection-and-migration.md
 │   ├── storage-and-indexing.md
 │   └── roadmap.md
 └── examples/
@@ -204,12 +207,13 @@ The broker may return:
 1. **Less context, stronger signal**: return only the guidance that matters for the current task.
 2. **Retrieve broadly, compile narrowly**: use semantic retrieval and structured matching internally, but do not dump raw documents into the agent context.
 3. **Respect existing repo guidance**: discover nested instruction files and treat them as path-scoped inputs instead of overwriting them.
-4. **Deterministic first**: policy selection should be explainable and reproducible.
-5. **Policy as code**: policies should be versioned, reviewed, and owned.
-6. **Indexes are derived artifacts**: metadata, BM25, and vector indexes accelerate retrieval but do not replace the Git policy registry as source of truth.
-7. **Local-first**: the open-source core should work without a hosted service.
-8. **Vendor-neutral**: support Codex, Claude Code, Copilot, Cursor, and other coding agents through simple command execution first.
-9. **Auditable**: every returned instruction should be traceable to a source policy.
+4. **Support gradual migration**: inspect existing instruction files, detect duplicates/conflicts, and generate draft broker policies for human review.
+5. **Deterministic first**: policy selection should be explainable and reproducible.
+6. **Policy as code**: policies should be versioned, reviewed, and owned.
+7. **Indexes are derived artifacts**: metadata, BM25, and vector indexes accelerate retrieval but do not replace the Git policy registry as source of truth.
+8. **Local-first**: the open-source core should work without a hosted service.
+9. **Vendor-neutral**: support Codex, Claude Code, Copilot, Cursor, and other coding agents through simple command execution first.
+10. **Auditable**: every returned instruction should be traceable to a source policy.
 
 ## License
 
