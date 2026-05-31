@@ -24,18 +24,18 @@ Recommended default precedence:
 1. system, developer, and direct user instructions;
 2. global safety policies;
 3. organization policies from the registry;
-4. root repository instructions;
+4. domain and risk policies from the registry;
 5. repository-specific registry policies;
-6. path-scoped nested instructions, broad to specific;
-7. domain and risk policies;
-8. repository-local `.agent-policy` policies;
+6. directory, language, framework, and task registry policies;
+7. explicitly trusted repository instructions, broad to specific;
+8. untrusted repository-local instructions and `.agent-policy` policies, broad to specific;
 9. inferred nearby conventions.
 
-Global safety policies should not be weakened by local instructions.
+Reviewed registry policies should not be weakened by branch-controlled local instructions. Local instructions may override registry policy only when the source is explicitly configured as trusted.
 
 ## Specificity rule
 
-When two non-safety instructions conflict, the more specific instruction usually wins.
+When two non-safety instructions with the same trust level conflict, the more specific instruction usually wins. Trust level is evaluated before path specificity.
 
 Example:
 
@@ -44,7 +44,7 @@ Root AGENTS.md: use pnpm
 frontend/AGENTS.md: use npm for frontend/**
 ```
 
-For a task touching only `frontend/**`, the frontend instruction should win.
+For a task touching only `frontend/**`, the frontend instruction should win if both files have the same trust level and no reviewed registry policy requires a different package manager.
 
 ## Safety rule
 
@@ -118,7 +118,7 @@ Examples:
 
 - multiple active policies with same ID;
 - two active policies with mutually exclusive required commands for the same path;
-- local policies that weaken global safety policies;
+- local policies that weaken reviewed registry policies;
 - nested instruction files with contradictory package-manager commands;
 - broad policies with missing path or risk constraints.
 

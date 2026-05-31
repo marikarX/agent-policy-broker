@@ -224,7 +224,7 @@ The broker may return:
 
 1. **Less context, stronger signal**: return only the guidance that matters for the current task.
 2. **Retrieve broadly, compile narrowly**: use semantic retrieval and structured matching internally, but do not dump raw documents into the agent context.
-3. **Respect existing repo guidance**: discover nested instruction files and treat them as path-scoped inputs instead of overwriting them.
+3. **Respect existing repo guidance safely**: discover nested instruction files and treat them as path-scoped inputs without letting untrusted local files weaken reviewed registry policy.
 4. **Support gradual migration**: inspect existing instruction files, detect duplicates/conflicts, and generate draft broker policies for human review.
 5. **Deterministic first**: policy selection should be explainable and reproducible.
 6. **Policy as code**: policies should be versioned, reviewed, and owned.

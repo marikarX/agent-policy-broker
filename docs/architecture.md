@@ -49,6 +49,7 @@ Layered instruction sources
   - nested AGENTS.md / CLAUDE.md files
   - editor-specific rules
   - repo-local .agent-policy policies
+  - trust metadata that distinguishes reviewed sources from branch-controlled sources
 
 Vector or semantic index
   - architecture docs
@@ -66,7 +67,7 @@ Instruction compiler
   - returns only concise instructions
 ```
 
-Vector retrieval is useful for recall. Structured matching is useful for precision and governance. Path-scoped instruction discovery preserves existing repo guidance. The final instruction bundle should be produced by the broker, not by dumping vector-search results or every nested instruction file into the agent context.
+Vector retrieval is useful for recall. Structured matching is useful for precision and governance. Path-scoped instruction discovery preserves existing repo guidance, but repository-local files are branch-controlled by default and should be treated as lower-authority inputs unless explicitly configured as trusted. The final instruction bundle should be produced by the broker, not by dumping vector-search results or every nested instruction file into the agent context.
 
 ## Components
 
@@ -108,7 +109,7 @@ The broker should discover existing path-scoped instruction files such as:
 - `.cursor/rules/**`
 - `.agent-policy/policies/**`
 
-Nested instruction files should be associated with their directory scope. For example, `backend/payments/AGENTS.md` applies to `backend/payments/**` and should be considered when the task touches files under that path.
+Nested instruction files should be associated with their directory scope. For example, `backend/payments/AGENTS.md` applies to `backend/payments/**` and should be considered when the task touches files under that path. Because these files can be changed by untrusted branches or pull requests, they should not override reviewed registry policy unless the source is explicitly marked trusted.
 
 See [Instruction discovery and layered guidance](instruction-discovery.md) for details.
 
@@ -201,16 +202,16 @@ Suggested precedence:
 
 1. global safety rules
 2. organization-wide rules
-3. root repository instructions
-4. repository-specific rules
-5. directory or package-specific rules
-6. nested instruction files, broad to specific
-7. domain-specific rules
-8. task-specific rules
-9. language and framework rules
+3. domain- and risk-specific registry rules
+4. repository-specific registry rules
+5. directory or package-specific registry rules
+6. task-specific registry rules
+7. language and framework registry rules
+8. explicitly trusted repository instructions, broad to specific
+9. untrusted repository-local instructions and policies, broad to specific
 10. inferred conventions
 
-Global safety rules should always win. Otherwise, more specific policy usually wins over general policy.
+Global safety rules should always win. Reviewed registry policies should not be weakened by branch-controlled repository instructions. Repository-local instructions may refine workflow details when they do not conflict with higher-authority policy, and may outrank registry policy only when the source is explicitly configured as trusted. Otherwise, more specific policy usually wins over general policy within the same trust level.
 
 ### Renderer
 

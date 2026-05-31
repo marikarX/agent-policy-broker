@@ -51,14 +51,14 @@ repo/backend/payments/AGENTS.md   applies to backend/payments/**
 
 When a task touches `backend/payments/refunds.ts`, the broker should consider:
 
-1. root repo guidance;
-2. backend guidance;
-3. backend payments guidance;
-4. registry policies for repo, language, framework, domain, and risk;
-5. retrieved supporting knowledge;
-6. repo-local policies.
+1. registry policies for repo, language, framework, domain, and risk;
+2. trusted root repo guidance;
+3. trusted backend guidance;
+4. trusted backend payments guidance;
+5. untrusted repo-local guidance and policies as supporting inputs;
+6. retrieved supporting knowledge.
 
-More specific path-scoped guidance should usually outrank broader guidance, except for global safety rules.
+More specific path-scoped guidance should usually outrank broader guidance within the same trust level. Branch-controlled repo guidance must not weaken reviewed registry policies unless it is explicitly configured as trusted.
 
 ## Discovery command
 
@@ -114,13 +114,13 @@ Recommended precedence:
 1. system, developer, and direct user instructions;
 2. global safety policies;
 3. organization policies from the registry;
-4. root repository instructions;
-5. path-scoped nested instructions, from broad to specific;
-6. domain and risk policies;
-7. repository-local `.agent-policy` policies;
+4. domain and risk policies from the registry;
+5. repository, directory, language, framework, and task policies from the registry;
+6. explicitly trusted repository instructions, from broad to specific;
+7. untrusted repository-local instructions and `.agent-policy` policies, from broad to specific;
 8. inferred nearby conventions.
 
-This precedence can be configured, but the broker should prevent local instructions from weakening global safety policies.
+This precedence can be configured, but the broker should prevent branch-controlled local instructions from weakening reviewed registry policies unless the local source is explicitly trusted.
 
 ## Conflict examples
 

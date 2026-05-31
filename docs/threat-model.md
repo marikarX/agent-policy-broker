@@ -95,14 +95,14 @@ Mitigations:
 
 ### Conflicting policies
 
-Risk: local instructions weaken organization safety rules.
+Risk: local instructions weaken reviewed organization, domain, risk, or task policies.
 
 Mitigations:
 
 - apply deterministic precedence;
-- make global safety policies non-weakenable;
+- make reviewed registry policies non-weakenable by branch-controlled local files unless explicitly trusted;
 - report conflicts;
-- fail closed for safety conflicts.
+- fail closed for safety or authority conflicts.
 
 ### Overloaded context
 
