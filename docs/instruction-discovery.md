@@ -51,14 +51,26 @@ repo/backend/payments/AGENTS.md   applies to backend/payments/**
 
 When a task touches `backend/payments/refunds.ts`, the broker should consider:
 
-1. registry policies for repo, language, framework, domain, and risk;
-2. trusted root repo guidance;
-3. trusted backend guidance;
-4. trusted backend payments guidance;
-5. untrusted repo-local guidance and policies as supporting inputs;
-6. retrieved supporting knowledge.
+1. selected registry policies for repo, domain, risk, package, task, language, and framework;
+2. explicitly trusted repository-local guidance that applies to the path;
+3. untrusted repository-local guidance and policies as supporting inputs;
+4. retrieved supporting knowledge.
 
-More specific path-scoped guidance should usually outrank broader guidance within the same trust level. Branch-controlled repo guidance must not weaken reviewed registry policies unless it is explicitly configured as trusted.
+More specific path-scoped guidance should usually outrank broader guidance within the same trust level. Branch-controlled repo guidance must not reduce reviewed registry policies unless it is explicitly configured as trusted.
+
+## Trust model
+
+Repository-local instruction files are branch-controlled by default. That makes them useful sources of context, but not automatically authoritative.
+
+A deployment may mark selected paths as trusted through configuration:
+
+```yaml
+instruction_sources:
+  trusted:
+    - AGENTS.md
+```
+
+MVP implementations may support exact trusted paths only. Later versions may support trusted globs, signed registry snapshots, or other review-aware trust models.
 
 ## Discovery command
 
@@ -76,17 +88,20 @@ Possible output:
     {
       "path": "AGENTS.md",
       "scope": ".",
-      "type": "agents_md"
+      "type": "agents_md",
+      "trusted": true
     },
     {
       "path": "backend/AGENTS.md",
       "scope": "backend/**",
-      "type": "agents_md"
+      "type": "agents_md",
+      "trusted": false
     },
     {
       "path": "backend/payments/AGENTS.md",
       "scope": "backend/payments/**",
-      "type": "agents_md"
+      "type": "agents_md",
+      "trusted": false
     }
   ]
 }
@@ -98,29 +113,33 @@ When `agent-policy get` runs, the broker should:
 
 1. identify relevant files for the task;
 2. discover applicable instruction files by path scope;
-3. read only the relevant instruction files;
-4. extract candidate guidance;
-5. merge with registry and local policies;
-6. deduplicate overlapping guidance;
-7. apply precedence and context budget;
-8. return a concise instruction bundle.
+3. classify discovered sources as trusted or untrusted;
+4. read only the relevant instruction files;
+5. extract candidate guidance;
+6. merge with registry and local policies;
+7. deduplicate overlapping guidance;
+8. apply precedence and context budget;
+9. return a concise instruction bundle.
 
 The coding agent should not receive the full contents of every nested instruction file. The broker should compile the relevant parts into the final bundle.
 
 ## Precedence
 
-Recommended precedence:
+The canonical default precedence is defined in [Conflict resolution](conflict-resolution.md). In short:
 
 1. system, developer, and direct user instructions;
 2. global safety policies;
-3. organization policies from the registry;
-4. domain and risk policies from the registry;
-5. repository, directory, language, framework, and task policies from the registry;
-6. explicitly trusted repository instructions, from broad to specific;
-7. untrusted repository-local instructions and `.agent-policy` policies, from broad to specific;
-8. inferred nearby conventions.
+3. organization-wide registry policies;
+4. domain- and risk-specific registry policies;
+5. repository-specific registry policies;
+6. directory- and package-specific registry policies;
+7. task-specific registry policies;
+8. language, framework, and package-manager registry policies;
+9. explicitly trusted repository-local instructions and policies, broad to specific;
+10. untrusted repository-local instructions and policies, broad to specific;
+11. inferred nearby conventions.
 
-This precedence can be configured, but the broker should prevent branch-controlled local instructions from weakening reviewed registry policies unless the local source is explicitly trusted.
+This precedence can be configured, but the broker should prevent branch-controlled local instructions from reducing reviewed registry policies unless the local source is explicitly trusted.
 
 ## Conflict examples
 
@@ -131,16 +150,16 @@ Root AGENTS.md: use pnpm
 frontend/AGENTS.md: use npm for this package
 ```
 
-If the task only touches `frontend/**`, the more specific frontend instruction should win for package-manager commands.
+If both sources are at the same trust level and the task only touches `frontend/**`, the more specific frontend instruction should win for package-manager commands.
 
 ### Safety conflict
 
 ```text
-Org policy: do not run destructive database commands
+Organization policy: avoid destructive database commands
 backend/AGENTS.md: reset the local database before tests
 ```
 
-The safety policy should win unless the command is explicitly classified as safe and local-only.
+The organization policy should win unless the command is explicitly classified as safe and local-only.
 
 ## Indexing nested instructions
 
@@ -154,7 +173,7 @@ Metadata to store:
 - last modified commit;
 - extracted instructions;
 - related language/framework/domain labels;
-- whether the source is authoritative or supporting.
+- whether the source is authoritative, explicitly trusted, or supporting.
 
 This allows the broker to retrieve only the instruction files that matter for the task.
 
@@ -166,7 +185,7 @@ Migration flow:
 
 ```text
 1. discover existing AGENTS.md / CLAUDE.md / editor rules
-2. index them with path scopes
+2. index them with path scopes and trust metadata
 3. detect duplicates and conflicts
 4. suggest registry policies for repeated guidance
 5. leave thin local bootstrap files in each repo or package
