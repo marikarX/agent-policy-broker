@@ -70,7 +70,18 @@ Planned capabilities:
 - deduplication of overlapping instructions
 - omission reporting for candidates excluded by the context budget
 
-## Phase 5: PR and CI integration
+## Phase 5: Repository inspection and migration
+
+Planned capabilities:
+
+- `agent-policy inspect`
+- `agent-policy migrate --dry-run`
+- report discovered instruction files and path scopes
+- detect stale, duplicated, or conflicting nested instruction files
+- generate draft policies with provenance
+- support gradual migration to thin bootstrap files
+
+## Phase 6: PR and CI integration
 
 Planned capabilities:
 
@@ -81,7 +92,7 @@ Planned capabilities:
 - detection of stale or conflicting nested instruction files
 - report candidate policies considered and omitted
 
-## Phase 6: Optional MCP server
+## Phase 7: Optional MCP server
 
 Planned capabilities:
 
@@ -89,9 +100,9 @@ Planned capabilities:
 - expose selected policies as MCP resources
 - support coding agents that prefer native tool calls over command execution
 
-## Phase 7: Organization control plane
+## Phase 8: Organization deployment patterns
 
-Potential paid or separately deployed capabilities:
+Future organization deployments may support:
 
 - central policy registry
 - organization-wide vector or semantic index
@@ -102,6 +113,8 @@ Potential paid or separately deployed capabilities:
 - analytics
 - compliance reports
 - duplicated instruction cleanup workflow
+
+These are deployment capabilities, not a commitment about packaging or pricing.
 
 ## Out of scope for early versions
 
