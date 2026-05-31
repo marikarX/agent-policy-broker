@@ -1,9 +1,15 @@
 //! Core data models for Agent Policy Broker.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
-use serde::{Deserialize, Serialize};
+use anyhow::{bail, Context, Result};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
+use walkdir::WalkDir;
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -28,6 +34,12 @@ pub struct Policy {
     pub retrieval: Option<PolicyRetrieval>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<BTreeMap<String, Value>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadedPolicy {
+    pub policy: Policy,
+    pub source_path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,6 +223,81 @@ pub struct BundleExplanation {
     pub reason: String,
 }
 
+pub fn load_policies_from_dirs<I, P>(
+    repo_root: impl AsRef<Path>,
+    policy_dirs: I,
+) -> Result<Vec<LoadedPolicy>>
+where
+    I: IntoIterator<Item = P>,
+    P: AsRef<Path>,
+{
+    let repo_root = repo_root.as_ref();
+    let mut policy_files = Vec::new();
+
+    for policy_dir in policy_dirs {
+        let policy_dir = resolve_policy_dir(repo_root, policy_dir.as_ref());
+
+        if !policy_dir.exists() {
+            continue;
+        }
+
+        if !policy_dir.is_dir() {
+            bail!(
+                "policy directory {} is not a directory",
+                policy_dir.display()
+            );
+        }
+
+        for entry in WalkDir::new(&policy_dir) {
+            let entry = entry.with_context(|| {
+                format!("failed to walk policy directory {}", policy_dir.display())
+            })?;
+
+            if entry.file_type().is_file() && is_policy_file(entry.path()) {
+                policy_files.push(entry.into_path());
+            }
+        }
+    }
+
+    policy_files.sort();
+
+    policy_files
+        .into_iter()
+        .map(|path| {
+            let policy = read_yaml_file::<Policy>(&path)?;
+            Ok(LoadedPolicy {
+                policy,
+                source_path: path,
+            })
+        })
+        .collect()
+}
+
+fn resolve_policy_dir(repo_root: &Path, policy_dir: &Path) -> PathBuf {
+    if policy_dir.is_absolute() {
+        policy_dir.to_path_buf()
+    } else {
+        repo_root.join(policy_dir)
+    }
+}
+
+fn is_policy_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some("yaml" | "yml")
+    )
+}
+
+fn read_yaml_file<T>(path: &Path) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    let raw = fs::read_to_string(path)
+        .with_context(|| format!("failed to read policy file {}", path.display()))?;
+    serde_yaml::from_str::<T>(&raw)
+        .with_context(|| format!("failed to parse policy file {}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,7 +411,9 @@ mod tests {
         assert_eq!(policy.required_checks.len(), 2);
         assert_eq!(
             policy.blocked_actions,
-            vec![BlockedAction("Do not edit generated files directly.".into())]
+            vec![BlockedAction(
+                "Do not edit generated files directly.".into()
+            )]
         );
     }
 
@@ -365,13 +454,23 @@ mod tests {
     }
 
     #[test]
+    fn yaml_extension_detection_accepts_yaml_and_yml() {
+        assert!(is_policy_file(Path::new("policy.yaml")));
+        assert!(is_policy_file(Path::new("policy.yml")));
+        assert!(!is_policy_file(Path::new("policy.json")));
+    }
+
+    #[test]
     fn task_intent_json_deserializes() {
         let intent: TaskIntent = serde_json::from_str(SAMPLE_INTENT_JSON).unwrap();
 
         assert_eq!(intent.repo.as_deref(), Some("billing-api"));
         assert_eq!(intent.branch.as_deref(), Some("feature/refund-retries"));
         assert_eq!(
-            intent.task.as_ref().and_then(|task| task.task_type.as_ref()),
+            intent
+                .task
+                .as_ref()
+                .and_then(|task| task.task_type.as_ref()),
             Some(&TaskType("fix_bug".into()))
         );
         assert_eq!(intent.files.len(), 2);
@@ -383,7 +482,10 @@ mod tests {
             Some("npm")
         );
         assert_eq!(
-            intent.output_budget.as_ref().and_then(|budget| budget.max_tokens),
+            intent
+                .output_budget
+                .as_ref()
+                .and_then(|budget| budget.max_tokens),
             Some(900)
         );
     }

@@ -1,0 +1,28 @@
+id: domain.payments.refunds
+version: 7
+status: active
+owner: payments-platform
+priority: 95
+applies_when:
+  paths:
+    - src/payments/**
+    - src/refunds/**
+    - tests/payments/**
+  task_types:
+    - fix_bug
+    - add_feature
+    - test
+  risk_flags:
+    - payments
+instructions:
+  - Preserve refund idempotency semantics.
+  - Add tests for duplicate refund requests and retry handling.
+required_checks:
+  - payments.unit_tests
+blocked_actions:
+  - Do not edit production payment credentials.
+  - Do not disable ledger reconciliation checks.
+retrieval:
+  semantic_terms:
+    - refund retry
+    - idempotency

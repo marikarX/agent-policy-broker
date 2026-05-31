@@ -286,7 +286,8 @@ impl AgentPolicyConfig {
         }
 
         if let Some(instruction_sources_patch) = patch.instruction_sources {
-            self.instruction_sources.apply_patch(instruction_sources_patch);
+            self.instruction_sources
+                .apply_patch(instruction_sources_patch);
         }
 
         if let Some(index_patch) = patch.index {

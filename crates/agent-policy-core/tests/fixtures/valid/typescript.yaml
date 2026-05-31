@@ -1,0 +1,27 @@
+id: lang.typescript.base
+version: 1
+status: active
+owner: platform-language
+priority: 100
+applies_when:
+  languages:
+    - typescript
+  frameworks:
+    - node
+    - jest
+  package_managers:
+    - npm
+    - pnpm
+  task_types:
+    - fix_bug
+    - add_feature
+    - refactor
+    - test
+instructions:
+  - Preserve the project's existing TypeScript strictness level.
+  - Add or update tests for behavior changes.
+required_checks:
+  - typescript.typecheck
+  - typescript.unit_tests
+blocked_actions:
+  - Do not edit generated files directly.

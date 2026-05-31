@@ -28,9 +28,15 @@ fn valid_agent_policy_yaml_loads_correctly() {
 
     let config = load_config(&repo_dir).expect("repo config should parse");
 
-    let registry = config.registry.as_ref().expect("registry should be present");
+    let registry = config
+        .registry
+        .as_ref()
+        .expect("registry should be present");
     assert_eq!(registry.registry_type, "git");
-    assert_eq!(registry.url, "git@github.com:company/agent-policy-registry.git");
+    assert_eq!(
+        registry.url,
+        "git@github.com:company/agent-policy-registry.git"
+    );
     assert_eq!(registry.r#ref, "main");
     assert_eq!(
         registry.cache_dir,

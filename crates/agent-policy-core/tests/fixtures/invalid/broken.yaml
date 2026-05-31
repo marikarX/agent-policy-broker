@@ -1,0 +1,9 @@
+id: broken.policy
+version: 1
+status: active
+applies_when:
+  languages:
+    - rust
+instructions:
+  - missing closing bracket
+required_checks: [
