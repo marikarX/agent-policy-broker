@@ -89,7 +89,7 @@ JSON is best for automation. Markdown is best for direct agent consumption.
 Agents should be encouraged to mention the applied policy version in their final response, for example:
 
 ```text
-Applied Agent Policy Broker bundle 2026-05-31.1. Ran npm run lint and npm test -- tests/payments.
+Applied Agent Policy Broker bundle 2026-05-31.1. Ran trusted checks typescript.lint and payments.unit_tests.
 ```
 
 This makes agent behavior easier to audit.

@@ -29,7 +29,7 @@ instructions:
   - Keep changes focused on the requested task.
 
 required_checks:
-  - npm run typecheck
+  - typescript.typecheck
 
 blocked_actions:
   - Do not edit generated files directly.
@@ -146,14 +146,16 @@ Avoid generic advice such as "write clean code".
 
 ### `required_checks`
 
-Optional list of commands or check identifiers. Required checks from selected safety-critical policies are mandatory controls. A context or output budget must not drop them solely to satisfy a caller-provided limit; if the bundle cannot include mandatory checks, the broker should fail closed and report the budget violation.
+Optional list of named check identifiers. Policy files MUST NOT define free-form shell commands in `required_checks`. Each identifier should resolve to a trusted check definition from organization-level configuration, a pinned registry entry, or another explicitly trusted allowlist outside unreviewed repository-local policy content.
+
+Brokers and agents MUST NOT execute policy-supplied check text as a shell command. If a returned check identifier cannot be resolved by trusted configuration, the agent should report it as unavailable or ask for explicit user confirmation instead of running it.
 
 Example:
 
 ```yaml
 required_checks:
-  - npm run lint
-  - npm test -- tests/payments
+  - typescript.lint
+  - payments.unit_tests
 ```
 
 ### `blocked_actions`
@@ -225,6 +227,14 @@ The broker should accept an intent object like this:
   },
   "risk_flags": ["payments"],
   "expected_commands": ["npm test"]
+  "expected_check_ids": ["typescript.unit_tests"],
+  "output_budget": {
+    "max_tokens": 900,
+    "max_instructions": 8,
+    "max_required_checks": 4,
+    "max_blocked_actions": 4,
+    "include_explanations": "compact"
+  }
 }
 ```
 
@@ -264,8 +274,14 @@ The broker should return an instruction bundle like this:
     }
   ],
   "required_checks": [
-    "npm run lint",
-    "npm test -- tests/payments"
+    {
+      "id": "typescript.lint",
+      "source": "lang.typescript.base@1"
+    },
+    {
+      "id": "payments.unit_tests",
+      "source": "domain.payments.testing@2"
+    }
   ],
   "blocked_actions": [
     "Do not edit production payment credentials."
@@ -287,8 +303,8 @@ The broker should return an instruction bundle like this:
 
 ## Open questions
 
-- Should `required_checks` be plain shell commands, named check IDs, or both?
-- Should policies support templating such as `{{test_path}}`?
+- Should trusted check definitions support parameterized arguments such as test-path selectors?
+- How should agents display unresolved check identifiers without encouraging unsafe command execution?
 - Should policy conflicts fail closed or return warnings?
 - How should inherited organization-level policies be represented?
 - Which local vector index backend should the open-source core support first?

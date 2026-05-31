@@ -151,8 +151,8 @@ The broker may return:
     }
   ],
   "required_checks": [
-    "npm run typecheck",
-    "npm test -- tests/payments"
+    { "id": "typescript.typecheck", "source": "lang.typescript.v4" },
+    { "id": "payments.unit_tests", "source": "domain.payments.testing@2" }
   ],
   "sources": [
     "repo.billing-api.v3",
