@@ -100,7 +100,7 @@ local_policies:
   - .agent-policy/policies
 ```
 
-Local policies can extend registry policies. They should not weaken global safety policies.
+Local policies can extend registry policies. They should not weaken reviewed registry policies unless the local source is explicitly configured as trusted.
 
 ## `instruction_sources`
 
@@ -166,7 +166,7 @@ Recommended precedence, from highest to lowest:
 4. registry `config.yaml`;
 5. built-in defaults.
 
-Higher-precedence configuration may narrow output or choose a specific registry ref. It should not weaken global safety behavior.
+Higher-precedence configuration may narrow output or choose a specific registry ref. It should not weaken global safety or reviewed registry policy behavior.
 
 ## Safe defaults
 

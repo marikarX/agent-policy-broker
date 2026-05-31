@@ -189,7 +189,7 @@ The main conflicts are operational, not architectural.
 | Index is stale | Store registry commit in manifest and rebuild when it changes. |
 | Vector search finds deprecated policy | Filter by metadata such as `status: active`. |
 | Semantic result is plausible but low authority | Rerank lower unless metadata also matches. |
-| Repo-local policy weakens org safety rule | Precedence rules prevent weakening global safety policy. |
+| Repo-local policy weakens reviewed registry policy | Precedence rules prevent branch-controlled local policy from weakening registry policy unless explicitly trusted. |
 | Sensitive docs get indexed | Require explicit include paths and safe defaults. |
 | Indexes disagree | Deterministic compiler decides final bundle. |
 

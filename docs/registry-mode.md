@@ -302,4 +302,4 @@ Recommended policy precedence:
 5. repository-local policies;
 6. conventions inferred from nearby code.
 
-Repository-local policies should be able to extend shared policy. They should not weaken global safety policies.
+Repository-local policies should be able to extend shared policy. They should not weaken reviewed registry policies unless the local source is explicitly configured as trusted.
