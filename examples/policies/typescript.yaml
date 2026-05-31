@@ -1,0 +1,32 @@
+id: lang.typescript.base
+version: 1
+status: active
+owner: platform-engineering
+priority: 50
+
+applies_when:
+  languages:
+    - typescript
+  task_types:
+    - fix_bug
+    - add_feature
+    - refactor
+    - test
+
+instructions:
+  - Prefer existing project types and patterns over introducing new abstractions.
+  - Do not use `any` unless the existing boundary is intentionally untyped or nearby code already uses it.
+  - Keep changes focused on the requested task.
+  - Update tests when behavior changes.
+
+required_checks:
+  - npm run typecheck
+  - npm test
+
+blocked_actions:
+  - Do not edit generated files directly.
+
+metadata:
+  tags:
+    - language
+    - typescript
