@@ -30,6 +30,7 @@ This repository is in the documentation and design phase. The current focus is d
 - deterministic policy selection
 - instruction bundle compilation
 - registry mode for shared policy repositories
+- storage and indexing model for Git-backed policies and derived retrieval indexes
 - examples for common coding-agent workflows
 
 ## Why this exists
@@ -73,6 +74,8 @@ vector retrieval for recall
 + output budgets
 = small, high-signal agent instructions
 ```
+
+The Git policy registry remains the source of truth. Metadata, BM25, and vector indexes are derived artifacts built from the registry and selected documentation.
 
 ## Non-goals
 
@@ -158,6 +161,7 @@ The broker may return:
 - [Getting started](docs/getting-started.md)
 - [Architecture](docs/architecture.md)
 - [Context budgeting and retrieval](docs/context-budgeting.md)
+- [Storage and indexing model](docs/storage-and-indexing.md)
 - [Registry mode and WSL workflow](docs/registry-mode.md)
 - [Policy schema](docs/policy-schema.md)
 - [Agent integration](docs/agent-integration.md)
@@ -180,6 +184,7 @@ The broker may return:
 │   ├── getting-started.md
 │   ├── policy-schema.md
 │   ├── registry-mode.md
+│   ├── storage-and-indexing.md
 │   └── roadmap.md
 └── examples/
     ├── AGENTS.md
@@ -194,9 +199,10 @@ The broker may return:
 2. **Retrieve broadly, compile narrowly**: use semantic retrieval and structured matching internally, but do not dump raw documents into the agent context.
 3. **Deterministic first**: policy selection should be explainable and reproducible.
 4. **Policy as code**: policies should be versioned, reviewed, and owned.
-5. **Local-first**: the open-source core should work without a hosted service.
-6. **Vendor-neutral**: support Codex, Claude Code, Copilot, Cursor, and other coding agents through simple command execution first.
-7. **Auditable**: every returned instruction should be traceable to a source policy.
+5. **Indexes are derived artifacts**: metadata, BM25, and vector indexes accelerate retrieval but do not replace the Git policy registry as source of truth.
+6. **Local-first**: the open-source core should work without a hosted service.
+7. **Vendor-neutral**: support Codex, Claude Code, Copilot, Cursor, and other coding agents through simple command execution first.
+8. **Auditable**: every returned instruction should be traceable to a source policy.
 
 ## License
 
