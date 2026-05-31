@@ -1,10 +1,12 @@
 # Agent Policy Broker
 
-Agent Policy Broker is an open-source CLI and service pattern for delivering task-specific, versioned instructions to coding agents.
+Agent Policy Broker is an open-source CLI and service pattern for delivering concise, task-specific, versioned instructions to coding agents.
 
 Instead of placing large, duplicated instruction files in every repository, teams can keep a small bootstrap file such as `AGENTS.md`, `CLAUDE.md`, Cursor rules, or Copilot instructions that tells the coding agent to request the right policy bundle for the current task.
 
-The broker selects policies based on structured intent and repository context:
+The broker is designed as a **context-budgeting policy engine**. It retrieves broadly, ranks aggressively, and returns only the instructions that matter now.
+
+The broker can select policies based on structured intent and repository context:
 
 - repository and branch
 - files and directories involved
@@ -12,6 +14,7 @@ The broker selects policies based on structured intent and repository context:
 - language and framework
 - package manager
 - risk area, such as auth, payments, migrations, public APIs, generated code, or security-sensitive paths
+- semantically relevant docs, review comments, postmortems, and policy snippets
 - required validation commands
 
 The goal is to help coding agents follow engineering standards, security rules, test requirements, and domain conventions without overloading every task with irrelevant context.
@@ -23,21 +26,51 @@ This repository is in the documentation and design phase. The current focus is d
 - policy schema
 - CLI behavior
 - agent bootstrap patterns
+- hybrid retrieval and context budgeting
 - deterministic policy selection
+- instruction bundle compilation
 - examples for common coding-agent workflows
 
 ## Why this exists
 
 Coding agents work better when they receive precise instructions. Static repository instruction files are useful, but they become hard to maintain when policies differ by language, framework, directory, domain, or task risk.
 
+Long instruction contexts can also reduce compliance: important guidance may compete with irrelevant rules, examples, and documentation. Agent Policy Broker aims to give agents less context, but more useful context.
+
 Agent Policy Broker proposes a lightweight control plane:
 
 ```text
 AGENTS.md / CLAUDE.md / editor rules
         -> run agent-policy get
-        -> broker selects relevant policies
-        -> agent receives compact instructions
+        -> broker retrieves candidate guidance
+        -> broker ranks and compiles concise instructions
+        -> agent receives compact policy bundle
         -> agent applies instructions and reports policy version
+```
+
+## Core idea
+
+Agent Policy Broker is not just a document retriever. It is an instruction compiler.
+
+```text
+raw policies + docs + review knowledge
+        -> hybrid retrieval
+        -> policy scoring
+        -> deduplication
+        -> context budget
+        -> concise instruction bundle
+```
+
+Vector search is useful for finding semantically relevant guidance from messy knowledge sources such as architecture docs, prior review comments, incident notes, and legacy instruction files. Structured metadata remains important for exact matching by repo, path, task type, risk flag, language, and framework.
+
+The intended design is hybrid:
+
+```text
+vector retrieval for recall
++ exact metadata filters for precision
++ deterministic policy priority
++ output budgets
+= small, high-signal agent instructions
 ```
 
 ## Non-goals
@@ -46,17 +79,17 @@ Agent Policy Broker is not intended to be:
 
 - a general-purpose AI agent orchestrator
 - a replacement for coding agents
-- a vector database by default
+- a raw vector-search dump into the agent context
 - a prompt dump or company handbook retriever
 - a substitute for CI, tests, code review, or security review
 
-The broker should be deterministic, inspectable, and easy to run locally.
+The broker should be deterministic, inspectable, privacy-conscious, and easy to run locally.
 
 ## Example
 
 A repository-level `AGENTS.md` can contain:
 
-```md
+````md
 # Dynamic coding-agent instructions
 
 Before editing code, run:
@@ -74,28 +107,46 @@ agent-policy get --task "$USER_TASK" --repo . --files src/payments/refunds.ts te
 Follow the returned instructions unless they conflict with higher-priority user, system, or repository instructions.
 
 If policy lookup fails, make the smallest safe change and report that dynamic policy lookup was unavailable.
-```
+````
 
 The broker may return:
 
 ```json
 {
   "status": "ok",
+  "bundle_id": "apb_2026-05-31_001",
   "policy_version": "2026-05-31.1",
+  "context_budget": {
+    "max_tokens": 900,
+    "estimated_tokens": 430,
+    "candidate_policies_considered": 14,
+    "candidate_policies_omitted": 9
+  },
   "instructions": [
-    "Use existing MoneyAmount and Currency types; do not introduce raw floating-point money handling.",
-    "Preserve refund idempotency semantics.",
-    "Add tests for success, provider failure, retry, and duplicate refund request.",
-    "Do not edit generated OpenAPI files directly."
+    {
+      "text": "Preserve refund idempotency: duplicate provider callbacks must not create duplicate refunds.",
+      "priority": "critical",
+      "source": "domain.payments.webhooks@3"
+    },
+    {
+      "text": "Use existing MoneyAmount and Currency types; do not introduce raw floating-point money handling.",
+      "priority": "high",
+      "source": "domain.payments.money@2"
+    },
+    {
+      "text": "Add tests for success, provider failure, retry, and duplicate refund request.",
+      "priority": "high",
+      "source": "domain.payments.testing@2"
+    }
   ],
   "required_checks": [
-    "npm run lint",
     "npm run typecheck",
     "npm test -- tests/payments"
   ],
   "sources": [
     "repo.billing-api.v3",
-    "domain.payments.v7",
+    "domain.payments.webhooks@3",
+    "domain.payments.money@2",
     "lang.typescript.v4"
   ]
 }
@@ -105,6 +156,7 @@ The broker may return:
 
 - [Getting started](docs/getting-started.md)
 - [Architecture](docs/architecture.md)
+- [Context budgeting and retrieval](docs/context-budgeting.md)
 - [Policy schema](docs/policy-schema.md)
 - [Agent integration](docs/agent-integration.md)
 - [Roadmap](docs/roadmap.md)
@@ -122,6 +174,7 @@ The broker may return:
 ├── docs/
 │   ├── architecture.md
 │   ├── agent-integration.md
+│   ├── context-budgeting.md
 │   ├── getting-started.md
 │   ├── policy-schema.md
 │   └── roadmap.md
@@ -134,12 +187,13 @@ The broker may return:
 
 ## Design principles
 
-1. **Deterministic first**: policy selection should be explainable and reproducible.
-2. **Small outputs**: return only the instructions relevant to the current task.
-3. **Policy as code**: policies should be versioned, reviewed, and owned.
-4. **Local-first**: the open-source core should work without a hosted service.
-5. **Vendor-neutral**: support Codex, Claude Code, Copilot, Cursor, and other coding agents through simple command execution first.
-6. **Auditable**: every returned instruction should be traceable to a source policy.
+1. **Less context, stronger signal**: return only the guidance that matters for the current task.
+2. **Retrieve broadly, compile narrowly**: use semantic retrieval and structured matching internally, but do not dump raw documents into the agent context.
+3. **Deterministic first**: policy selection should be explainable and reproducible.
+4. **Policy as code**: policies should be versioned, reviewed, and owned.
+5. **Local-first**: the open-source core should work without a hosted service.
+6. **Vendor-neutral**: support Codex, Claude Code, Copilot, Cursor, and other coding agents through simple command execution first.
+7. **Auditable**: every returned instruction should be traceable to a source policy.
 
 ## License
 
