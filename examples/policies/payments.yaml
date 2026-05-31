@@ -1,0 +1,36 @@
+id: domain.payments.refunds
+version: 1
+status: active
+owner: payments-platform
+priority: 90
+
+applies_when:
+  paths:
+    - src/payments/**
+    - src/refunds/**
+    - tests/payments/**
+  risk_flags:
+    - payments
+  task_types:
+    - fix_bug
+    - add_feature
+    - test
+
+instructions:
+  - Preserve idempotency for refund creation and retry handling.
+  - Represent money with existing domain types; do not introduce floating-point money calculations.
+  - Add or update tests for success, provider failure, retry, and duplicate refund requests.
+  - Do not change settlement or reconciliation behavior unless the task explicitly requires it.
+
+required_checks:
+  - npm test -- tests/payments
+
+blocked_actions:
+  - Do not edit payment provider credentials.
+  - Do not run destructive database commands.
+
+metadata:
+  tags:
+    - domain
+    - payments
+    - refunds
