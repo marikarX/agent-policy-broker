@@ -10,6 +10,7 @@ This roadmap is intentionally small and implementation-oriented.
 - Document agent integration patterns
 - Add example policies and bootstrap files
 - Document context budgeting and retrieval strategy
+- Document nested instruction discovery and layered guidance
 
 ## Phase 1: Local CLI MVP
 
@@ -18,17 +19,19 @@ Goal: make the project useful without any hosted service.
 Planned capabilities:
 
 - `agent-policy get`
+- `agent-policy discover`
 - load YAML policies from `.agent-policy/policies` or a configured directory
 - accept task intent through flags
 - accept task intent through JSON input
 - detect basic repository metadata
+- discover root and nested instruction files such as `AGENTS.md`, `CLAUDE.md`, and editor rules
 - match policies by language, framework, path, task type, and risk flag
 - apply a simple output budget such as max instructions and max checks
 - return JSON or Markdown instruction bundles
 - include source policy IDs and versions
 - provide safe failure behavior
 
-## Phase 2: Policy validation
+## Phase 2: Policy and instruction validation
 
 Planned capabilities:
 
@@ -37,6 +40,8 @@ Planned capabilities:
 - warnings for vague instructions
 - warnings for overly broad policies
 - detection of duplicate policy IDs
+- detection of duplicated guidance across nested instruction files
+- detection of conflicting package-manager or test-command guidance
 - basic conflict checks
 - warnings when policies are likely to exceed context budgets
 
@@ -49,6 +54,7 @@ Planned capabilities:
 - detect changed files from Git
 - read CODEOWNERS
 - map files to likely language/framework/domain
+- map nested instruction files to directory scopes
 - support generated-file and sensitive-path configuration
 
 ## Phase 4: Local retrieval index
@@ -58,7 +64,7 @@ Goal: improve recall without sending repository data to a hosted service.
 Planned capabilities:
 
 - `agent-policy index`
-- local index over policy files and selected documentation
+- local index over policy files, nested instruction files, and selected documentation
 - semantic lookup for policy `retrieval.semantic_terms`
 - hybrid retrieval combining exact metadata and semantic similarity
 - deduplication of overlapping instructions
@@ -72,6 +78,7 @@ Planned capabilities:
 - PR comment showing selected policies
 - required checks derived from selected policy bundle
 - policy drift detection for repos missing bootstrap files
+- detection of stale or conflicting nested instruction files
 - report candidate policies considered and omitted
 
 ## Phase 6: Optional MCP server
@@ -94,6 +101,7 @@ Potential paid or separately deployed capabilities:
 - multi-repo rollout
 - analytics
 - compliance reports
+- duplicated instruction cleanup workflow
 
 ## Out of scope for early versions
 
