@@ -1,0 +1,93 @@
+# Getting started
+
+Agent Policy Broker is currently a design-first open-source project. This guide describes the intended local-first workflow and the minimum behavior expected from the first implementation.
+
+## Core workflow
+
+```text
+1. A coding agent reads AGENTS.md, CLAUDE.md, Cursor rules, or Copilot instructions.
+2. The instruction file tells the agent to run `agent-policy get` before editing code.
+3. The CLI collects task and repository context.
+4. The broker selects relevant policy modules.
+5. The CLI prints a compact instruction bundle.
+6. The coding agent follows the returned instructions and reports the policy version.
+```
+
+## Intended CLI
+
+The open-source CLI should support a command similar to:
+
+```bash
+agent-policy get --repo . --task "fix refund retry handling"
+```
+
+When files are known:
+
+```bash
+agent-policy get \
+  --repo . \
+  --task "fix refund retry handling" \
+  --files src/payments/refunds.ts tests/payments/refunds.test.ts
+```
+
+Expected output:
+
+```json
+{
+  "status": "ok",
+  "policy_version": "2026-05-31.1",
+  "summary": "Instructions for a TypeScript payment change.",
+  "instructions": [
+    "Preserve refund idempotency semantics.",
+    "Add tests for provider retry and duplicate refund request.",
+    "Run the required checks before final response."
+  ],
+  "required_checks": [
+    "npm run lint",
+    "npm test -- tests/payments"
+  ],
+  "sources": [
+    "domain.payments.v7",
+    "lang.typescript.v4"
+  ]
+}
+```
+
+## Minimal policy directory
+
+A repository or organization can keep policy files in a directory such as:
+
+```text
+.agent-policy/
+├── policies/
+│   ├── typescript.yaml
+│   ├── testing.yaml
+│   └── payments.yaml
+└── config.yaml
+```
+
+## Example bootstrap file
+
+See [`../examples/AGENTS.md`](../examples/AGENTS.md) for a starter `AGENTS.md`.
+
+## MVP checklist
+
+The first implementation should be able to:
+
+- load local YAML policy files
+- accept task intent through CLI flags or JSON input
+- detect basic repository metadata
+- match policies by repo, path, language, framework, task type, and risk flag
+- return compact JSON or Markdown instructions
+- include source policy IDs and versions
+- fail safely with a clear message
+
+## Fallback behavior
+
+If policy lookup fails, the coding agent should:
+
+1. make the smallest safe change;
+2. avoid risky areas unless explicitly instructed;
+3. inspect nearby code and tests;
+4. run the narrowest relevant checks;
+5. report that dynamic policy lookup was unavailable.
