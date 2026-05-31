@@ -1,10 +1,12 @@
 # Architecture
 
-Agent Policy Broker is designed as a deterministic policy composition layer for coding agents.
+Agent Policy Broker is designed as a context-budgeting policy engine for coding agents.
 
 The broker should answer one question:
 
 > Given this task intent and repository context, which compact instructions should the coding agent follow now?
+
+The broker should retrieve broadly, rank aggressively, and compile narrowly. The coding agent should receive concise instructions, not raw documentation dumps.
 
 ## High-level design
 
@@ -19,7 +21,9 @@ agent-policy CLI
     v
 Policy broker
     |
-    | loads policy modules and repo metadata
+    | retrieves candidate guidance
+    | ranks policies and knowledge snippets
+    | applies context budget
     v
 Instruction bundle
     |
@@ -27,6 +31,35 @@ Instruction bundle
     v
 Coding agent applies instructions
 ```
+
+## Retrieval model
+
+Agent Policy Broker should use hybrid retrieval.
+
+```text
+Structured policy store
+  - exact repo/path/language/framework/risk matching
+  - policy priority
+  - policy version
+  - owner and status
+
+Vector or semantic index
+  - architecture docs
+  - engineering handbook pages
+  - old AGENTS.md / CLAUDE.md files
+  - code review comments
+  - incident postmortems
+  - domain notes
+  - provider-specific docs
+
+Instruction compiler
+  - merges candidates
+  - deduplicates overlapping guidance
+  - applies priority and context budget
+  - returns only concise instructions
+```
+
+Vector retrieval is useful for recall. Structured matching is useful for precision and governance. The final instruction bundle should be produced by the broker, not by dumping vector-search results into the agent context.
 
 ## Components
 
@@ -56,6 +89,22 @@ Examples:
 - domain policy: payments, auth, billing, search
 - risk policy: migrations, generated code, public API, secrets
 - repo policy: package manager, commands, directory layout
+
+### Knowledge index
+
+The knowledge index stores semantically searchable supporting material.
+
+Examples:
+
+- architecture docs
+- migration guides
+- prior review feedback
+- production incident notes
+- domain explanations
+- API provider notes
+- legacy instruction files
+
+The knowledge index is not the source of truth for final policy. It provides candidate evidence and context for the instruction compiler.
 
 ### Context resolver
 
@@ -91,6 +140,37 @@ Typical matching fields:
 
 Selection should be deterministic and explainable.
 
+### Semantic retriever
+
+The semantic retriever finds additional candidate guidance from less-structured material.
+
+Example:
+
+```text
+Task: "Fix duplicated Stripe refund callback"
+
+Semantic retrieval may find:
+  - refund webhook idempotency notes
+  - payment provider retry docs
+  - prior review comments about duplicate callbacks
+  - payment testing conventions
+```
+
+The agent should not receive all retrieved chunks. Retrieved material should be converted into short, source-backed instructions or omitted.
+
+### Instruction compiler
+
+The instruction compiler is the core value of the broker.
+
+Responsibilities:
+
+- combine structured policy matches and semantic retrieval candidates
+- remove duplicate or generic guidance
+- prefer specific guidance over broad guidance
+- apply priority and safety rules
+- fit the result into a strict output budget
+- return source IDs for auditability
+
 ### Conflict resolver
 
 When selected policies conflict, the broker should resolve or report the conflict.
@@ -123,18 +203,40 @@ Supported output formats should include:
 Intent input
   -> validation
   -> context enrichment
-  -> candidate policy lookup
-  -> scoring
+  -> exact policy lookup
+  -> semantic candidate retrieval
+  -> scoring and reranking
+  -> deduplication
   -> precedence/conflict resolution
+  -> context budget application
   -> instruction rendering
   -> audit metadata
 ```
+
+## Context budget
+
+Every instruction bundle should have a budget.
+
+Example:
+
+```yaml
+output_budget:
+  max_tokens: 900
+  max_instructions: 8
+  max_required_checks: 4
+  max_blocked_actions: 4
+  include_examples: false
+  include_explanations: compact
+```
+
+Candidates that do not fit the budget should be omitted, not appended. The response should optionally report how many candidate policies were considered and omitted.
 
 ## Optional hosted service
 
 The open-source core should work locally. A hosted or self-hosted service can later add:
 
 - centralized policy registry
+- organization-wide vector index
 - organization-wide rollout
 - approval workflows
 - audit logs
@@ -152,5 +254,6 @@ A language model may be useful for optional tasks such as:
 - summarizing already-selected policies
 - classifying vague task intent
 - mapping natural language to canonical risk labels
+- transforming retrieved evidence into concise instruction candidates
 
 But the policy source of truth should remain explicit, versioned, and reviewable.
