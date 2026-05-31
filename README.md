@@ -27,6 +27,7 @@ This repository is in the documentation and design phase. The current focus is d
 - policy schema
 - CLI behavior
 - configuration model
+- Rust implementation stack
 - agent bootstrap patterns
 - layered instruction discovery for nested repo guidance
 - inspection and migration of existing repo instructions
@@ -166,6 +167,7 @@ The broker may return:
 
 - [Getting started](docs/getting-started.md)
 - [Architecture](docs/architecture.md)
+- [Implementation stack](docs/implementation-stack.md)
 - [CLI reference](docs/cli-reference.md)
 - [Configuration](docs/configuration.md)
 - [Instruction discovery and layered guidance](docs/instruction-discovery.md)
@@ -201,6 +203,7 @@ The broker may return:
 │   ├── conflict-resolution.md
 │   ├── context-budgeting.md
 │   ├── getting-started.md
+│   ├── implementation-stack.md
 │   ├── instruction-discovery.md
 │   ├── policy-schema.md
 │   ├── project-scope.md
