@@ -30,6 +30,16 @@ instruction_sources:
   exclude:
     - node_modules/**
     - vendor/**
+  trusted:
+    - AGENTS.md
+
+check_definitions:
+  typescript.lint:
+    command: npm run lint
+    trust: registry
+  typescript.typecheck:
+    command: npm run typecheck
+    trust: registry
 
 index:
   include:
@@ -100,7 +110,7 @@ local_policies:
   - .agent-policy/policies
 ```
 
-Local policies can extend registry policies. They should not weaken reviewed registry policies unless the local source is explicitly configured as trusted.
+Local policies can extend registry policies. They should not reduce reviewed registry policies unless the local source is explicitly configured as trusted.
 
 ## `instruction_sources`
 
@@ -118,9 +128,35 @@ instruction_sources:
   exclude:
     - node_modules/**
     - vendor/**
+  trusted:
+    - AGENTS.md
 ```
 
 Instruction sources are path-scoped. A file at `backend/AGENTS.md` applies to `backend/**`.
+
+The optional `trusted` list marks instruction sources that may participate at the trusted repository-local precedence level. This should be used carefully. Branch-controlled files should be treated as untrusted unless the deployment has a review model that makes the path authoritative.
+
+MVP implementations may support only exact path entries in `trusted`. Later versions may support glob patterns and source classes.
+
+## `check_definitions`
+
+Maps required check IDs from policies to trusted commands.
+
+```yaml
+check_definitions:
+  typescript.lint:
+    command: npm run lint
+    trust: registry
+    description: Run lint checks.
+  typescript.typecheck:
+    command: npm run typecheck
+    trust: registry
+    description: Run TypeScript type checking.
+```
+
+Policies should reference check IDs, not raw shell commands. The broker should only resolve check IDs through trusted configuration. If a selected check ID cannot be resolved, the instruction bundle should report the unresolved ID rather than converting it to a command.
+
+For MVP, check definitions may be read only from trusted registry config or explicitly supplied operator config. Repository-local branch-controlled config should not be able to define new executable commands unless explicitly trusted.
 
 ## `index`
 
@@ -162,11 +198,12 @@ Recommended precedence, from highest to lowest:
 
 1. CLI flags;
 2. explicit `--config` file;
-3. repository `.agent-policy.yaml`;
+3. trusted operator configuration;
 4. registry `config.yaml`;
-5. built-in defaults.
+5. repository `.agent-policy.yaml`;
+6. built-in defaults.
 
-Higher-precedence trusted configuration may narrow output or choose a specific registry ref. Configuration from untrusted repository branches or task-controlled inputs must not weaken global safety or reviewed registry policy behavior, and any accepted budget hints must be clamped to safe operator-defined minimums.
+CLI flags and explicit config should still be validated against safety constraints. Repository branch-controlled configuration should not be able to weaken reviewed registry policy, define trusted executable checks, or lower mandatory budget minimums unless the path is explicitly trusted by the deployment.
 
 ## Safe defaults
 
@@ -177,4 +214,6 @@ Default behavior should be conservative:
 - no source-code indexing by default;
 - no deletion or rewriting of existing instruction files;
 - local-only registry and index caches;
-- localhost binding for local service mode.
+- localhost binding for local service mode;
+- unresolved check IDs are reported, not executed;
+- repository-local instruction sources are untrusted unless configured otherwise.
