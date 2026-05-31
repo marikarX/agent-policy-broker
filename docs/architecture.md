@@ -21,6 +21,7 @@ agent-policy CLI
     v
 Policy broker
     |
+    | discovers path-scoped instruction files
     | retrieves candidate guidance
     | ranks policies and knowledge snippets
     | applies context budget
@@ -43,6 +44,12 @@ Structured policy store
   - policy version
   - owner and status
 
+Layered instruction sources
+  - root AGENTS.md / CLAUDE.md
+  - nested AGENTS.md / CLAUDE.md files
+  - editor-specific rules
+  - repo-local .agent-policy policies
+
 Vector or semantic index
   - architecture docs
   - engineering handbook pages
@@ -59,7 +66,7 @@ Instruction compiler
   - returns only concise instructions
 ```
 
-Vector retrieval is useful for recall. Structured matching is useful for precision and governance. The final instruction bundle should be produced by the broker, not by dumping vector-search results into the agent context.
+Vector retrieval is useful for recall. Structured matching is useful for precision and governance. Path-scoped instruction discovery preserves existing repo guidance. The final instruction bundle should be produced by the broker, not by dumping vector-search results or every nested instruction file into the agent context.
 
 ## Components
 
@@ -72,6 +79,7 @@ Responsibilities:
 - parse task intent from flags or JSON
 - detect repository metadata
 - detect changed or relevant files when possible
+- discover applicable instruction files
 - call the local selector or remote service
 - print JSON or Markdown output
 - cache safe results when appropriate
@@ -89,6 +97,20 @@ Examples:
 - domain policy: payments, auth, billing, search
 - risk policy: migrations, generated code, public API, secrets
 - repo policy: package manager, commands, directory layout
+
+### Instruction source discovery
+
+The broker should discover existing path-scoped instruction files such as:
+
+- `AGENTS.md`
+- `CLAUDE.md`
+- `.github/copilot-instructions.md`
+- `.cursor/rules/**`
+- `.agent-policy/policies/**`
+
+Nested instruction files should be associated with their directory scope. For example, `backend/payments/AGENTS.md` applies to `backend/payments/**` and should be considered when the task touches files under that path.
+
+See [Instruction discovery and layered guidance](instruction-discovery.md) for details.
 
 ### Knowledge index
 
@@ -164,7 +186,7 @@ The instruction compiler is the core value of the broker.
 
 Responsibilities:
 
-- combine structured policy matches and semantic retrieval candidates
+- combine structured policy matches, path-scoped instructions, and semantic retrieval candidates
 - remove duplicate or generic guidance
 - prefer specific guidance over broad guidance
 - apply priority and safety rules
@@ -179,12 +201,14 @@ Suggested precedence:
 
 1. global safety rules
 2. organization-wide rules
-3. repository-specific rules
-4. directory or package-specific rules
-5. domain-specific rules
-6. task-specific rules
-7. language and framework rules
-8. inferred conventions
+3. root repository instructions
+4. repository-specific rules
+5. directory or package-specific rules
+6. nested instruction files, broad to specific
+7. domain-specific rules
+8. task-specific rules
+9. language and framework rules
+10. inferred conventions
 
 Global safety rules should always win. Otherwise, more specific policy usually wins over general policy.
 
@@ -203,6 +227,7 @@ Supported output formats should include:
 Intent input
   -> validation
   -> context enrichment
+  -> instruction source discovery
   -> exact policy lookup
   -> semantic candidate retrieval
   -> scoring and reranking
