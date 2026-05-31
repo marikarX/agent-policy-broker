@@ -202,19 +202,20 @@ The canonical default precedence is defined in [Conflict resolution](conflict-re
 
 Summary:
 
-1. system, developer, and direct user instructions
+1. system and developer instructions
 2. global safety policies
-3. organization-wide registry policies
-4. domain- and risk-specific registry policies
-5. repository-specific registry policies
-6. directory- and package-specific registry policies
-7. task-specific registry policies
-8. language, framework, and package-manager registry policies
-9. explicitly trusted repository-local instructions and policies, broad to specific
-10. untrusted repository-local instructions and policies, broad to specific
-11. inferred nearby conventions
+3. direct user task instructions
+4. organization-wide registry policies
+5. domain- and risk-specific registry policies
+6. repository-specific registry policies
+7. directory- and package-specific registry policies
+8. task-specific registry policies
+9. language, framework, and package-manager registry policies
+10. explicitly trusted repository-local instructions and policies, broad to specific
+11. untrusted repository-local instructions and policies, broad to specific
+12. inferred nearby conventions
 
-Global safety rules should always win. Reviewed registry policies should not be reduced by branch-controlled repository instructions. Repository-local instructions may refine workflow details when they do not conflict with higher-authority policy, and may outrank registry policy only when the source is explicitly configured as trusted. Otherwise, more specific policy usually wins over general policy within the same trust level.
+Global safety rules are mandatory broker controls and should always win over direct user task text, branch-controlled repository instructions, and lower-precedence policy sources. Reviewed registry policies should not be reduced by branch-controlled repository instructions. Repository-local instructions may refine workflow details when they do not conflict with higher-authority policy, and may outrank registry policy only when the source is explicitly configured as trusted. Otherwise, more specific policy usually wins over general policy within the same trust level.
 
 ### Renderer
 

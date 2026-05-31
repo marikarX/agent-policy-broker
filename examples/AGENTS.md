@@ -25,15 +25,16 @@ Use the returned instruction bundle as task-specific guidance.
 
 Follow instructions in this order:
 
-1. system, developer, and user instructions
+1. system and developer instructions
 2. Agent Policy Broker's returned global and organization safety instructions
-3. this repository's static instructions
-4. other Agent Policy Broker returned task instructions
-5. conventions inferred from nearby code
+3. user task instructions
+4. this repository's static instructions
+5. other Agent Policy Broker returned task instructions
+6. conventions inferred from nearby code
 
 If instructions conflict, stop and report the conflict. Treat conflicts involving
-broker-supplied safety instructions as blocking, and do not let repository-local
-instructions weaken global or organization safety policy.
+broker-supplied safety instructions as blocking, and do not let user task text or
+repository-local instructions weaken global or organization safety policy.
 
 ## Fallback
 

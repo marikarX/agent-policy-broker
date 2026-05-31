@@ -23,19 +23,20 @@ Common conflicts include:
 
 Recommended default precedence:
 
-1. system, developer, and direct user instructions;
+1. system and developer instructions;
 2. global safety policies;
-3. organization-wide registry policies;
-4. domain- and risk-specific registry policies;
-5. repository-specific registry policies;
-6. directory- and package-specific registry policies;
-7. task-specific registry policies;
-8. language, framework, and package-manager registry policies;
-9. explicitly trusted repository-local instructions and policies, broad to specific;
-10. untrusted repository-local instructions and policies, broad to specific;
-11. inferred nearby conventions.
+3. direct user task instructions;
+4. organization-wide registry policies;
+5. domain- and risk-specific registry policies;
+6. repository-specific registry policies;
+7. directory- and package-specific registry policies;
+8. task-specific registry policies;
+9. language, framework, and package-manager registry policies;
+10. explicitly trusted repository-local instructions and policies, broad to specific;
+11. untrusted repository-local instructions and policies, broad to specific;
+12. inferred nearby conventions.
 
-Reviewed registry policies should not be reduced by branch-controlled local instructions. Local instructions may take precedence over registry policy only when the source is explicitly configured as trusted.
+Global safety policies are mandatory broker controls and must not be weakened by direct user task text, branch-controlled local instructions, or any lower-precedence policy source. Reviewed registry policies should not be reduced by branch-controlled local instructions. Local instructions may take precedence over registry policy only when the source is explicitly configured as trusted.
 
 ## Specificity rule
 

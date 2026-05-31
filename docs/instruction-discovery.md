@@ -127,19 +127,20 @@ The coding agent should not receive the full contents of every nested instructio
 
 The canonical default precedence is defined in [Conflict resolution](conflict-resolution.md). In short:
 
-1. system, developer, and direct user instructions;
+1. system and developer instructions;
 2. global safety policies;
-3. organization-wide registry policies;
-4. domain- and risk-specific registry policies;
-5. repository-specific registry policies;
-6. directory- and package-specific registry policies;
-7. task-specific registry policies;
-8. language, framework, and package-manager registry policies;
-9. explicitly trusted repository-local instructions and policies, broad to specific;
-10. untrusted repository-local instructions and policies, broad to specific;
-11. inferred nearby conventions.
+3. direct user task instructions;
+4. organization-wide registry policies;
+5. domain- and risk-specific registry policies;
+6. repository-specific registry policies;
+7. directory- and package-specific registry policies;
+8. task-specific registry policies;
+9. language, framework, and package-manager registry policies;
+10. explicitly trusted repository-local instructions and policies, broad to specific;
+11. untrusted repository-local instructions and policies, broad to specific;
+12. inferred nearby conventions.
 
-This precedence can be configured, but the broker should prevent branch-controlled local instructions from reducing reviewed registry policies unless the local source is explicitly trusted.
+This precedence can be configured, but the broker should always prevent direct user task text and branch-controlled local instructions from reducing global safety policies. It should also prevent branch-controlled local instructions from reducing reviewed registry policies unless the local source is explicitly trusted.
 
 ## Conflict examples
 

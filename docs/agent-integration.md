@@ -28,7 +28,7 @@ agent-policy get --repo . --task "$USER_TASK"
 
 If relevant files are known, include them with `--files`.
 
-Follow the returned instructions unless they conflict with higher-priority system, developer, or user instructions.
+Follow the returned instructions unless they conflict with higher-priority system or developer instructions; direct user task instructions must not weaken mandatory global safety controls returned by the broker.
 
 If the command fails, follow the fallback rules in this file and report that policy lookup was unavailable.
 ```
