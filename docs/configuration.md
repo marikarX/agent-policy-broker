@@ -9,12 +9,11 @@ Configuration should be explicit, local-first, and safe by default.
 ```yaml
 registry:
   type: git
-  url: git@github.com:company/agent-policy-registry.git
+  url: ~/.cache/agent-policy/registries/company
   ref: main
   cache_dir: ~/.cache/agent-policy/registries/company
   sync:
-    mode: auto
-    max_age_minutes: 15
+    mode: manual
 
 local_policies:
   - .agent-policy/policies
@@ -31,6 +30,14 @@ instruction_sources:
     - node_modules/**
     - vendor/**
 
+codex:
+  enabled: false
+  home: null
+  current_dir: null
+  project_doc_fallback_filenames: []
+  project_doc_max_bytes: 32768
+  include_global: false
+
 index:
   include:
     - .agent-policy/policies
@@ -40,6 +47,9 @@ index:
     - src
     - secrets
     - node_modules
+  vector:
+    enabled: false
+    backend: sqlite_vec
 
 output_budget:
   max_tokens: 900
@@ -66,7 +76,7 @@ Fields:
 
 ```text
 type        Registry backend. Initial supported value: git.
-url         Git remote URL.
+url         Local filesystem path or file:// URL in the MVP. Remote URLs are recorded but not fetched.
 ref         Branch, tag, or commit SHA.
 cache_dir   Local cache path.
 ```
@@ -85,8 +95,8 @@ registry:
 Supported modes:
 
 ```text
-manual   Update only when `agent-policy registry sync` is run.
-auto     Fetch or pull when cache is older than max_age_minutes.
+manual   Use the configured local cache when `agent-policy registry sync` is run.
+auto     MVP behavior is cached-only; remote fetch or pull is not implemented.
 pinned   Use an exact commit SHA and do not auto-update.
 offline  Use local cache only.
 ```
@@ -124,7 +134,37 @@ Instruction sources are path-scoped. A file at `backend/AGENTS.md` applies to `b
 
 Repository-local configuration should list instruction files to discover, not promote those files to trusted precedence. The optional `trusted` list is reserved for trusted operator or deployment configuration that is outside branch-controlled repository contents. Branch-controlled files should be treated as untrusted unless the deployment has a review model that makes the path authoritative.
 
+The MVP reads full registry settings from `.agent-policy.yaml` or an explicit `--config` file, but registry loading and `registry sync` are local-only: remote clone, fetch, and pull are not implemented. Hardened deployments should prefer trusted operator configuration for registry URLs, refs, cache directories, and sync modes, and should reject branch-controlled overrides unless they exactly match an allowlist.
+
 MVP implementations may support only exact path entries in `trusted`. Later versions may support glob patterns and source classes.
+
+## `codex`
+
+Controls Codex-compatible `AGENTS.md` discovery when a command selects Codex mode.
+
+```yaml
+codex:
+  enabled: true
+  home: ~/.codex
+  current_dir: backend/payments
+  project_doc_fallback_filenames:
+    - INSTRUCTIONS.md
+  project_doc_max_bytes: 32768
+  include_global: true
+```
+
+Fields:
+
+```text
+enabled                         Enables Codex-compatible discovery for integrations that opt into it.
+home                            Optional Codex home. If omitted, CODEX_HOME is used, then ~/.codex when global instructions are requested.
+current_dir                     Requested current directory. Relative paths are resolved from the project root.
+project_doc_fallback_filenames  Extra project instruction filenames checked after AGENTS.override.md and AGENTS.md.
+project_doc_max_bytes           Maximum bytes read per project instruction file. Defaults to 32768.
+include_global                  Include the first non-empty global file from Codex home.
+```
+
+Codex-compatible discovery checks `AGENTS.override.md` before `AGENTS.md`; fallback filenames are used only if neither exists in that directory. It walks from the project root to `current_dir`, activates at most one instruction file per directory, skips empty files, and reports skipped or truncated files in discovery metadata.
 
 ## `check_definitions`
 
@@ -162,9 +202,14 @@ index:
     - src
     - secrets
     - node_modules
+  vector:
+    enabled: false
+    backend: sqlite_vec
 ```
 
-Source code should not be indexed by default. Users may explicitly include source paths if they understand the privacy and performance tradeoffs.
+Source code is not indexed by default because the default `index.include` list is empty. Users may explicitly include source paths if they understand the privacy and performance tradeoffs.
+
+`index.vector` is disabled by default. The MVP CLI index builds metadata and Tantivy full-text indexes; vector indexing is a future local-only retrieval path and makes no remote embedding calls.
 
 ## `output_budget`
 

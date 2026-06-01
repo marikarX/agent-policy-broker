@@ -29,15 +29,15 @@ Examples, tests, and documentation should use synthetic data.
 
 ## Local service security
 
-If local service mode is implemented, it should bind to `127.0.0.1` by default.
+Local service mode binds to `127.0.0.1` by default.
 
-It should not expose repository metadata, policy contents, retrieval indexes, or instruction bundles to the network unless explicitly configured.
+It should not expose repository metadata, policy contents, retrieval indexes, or instruction bundles to the network unless the user explicitly chooses a non-localhost `--host`.
 
 ## Policy registry security
 
 The Git policy registry should be treated as a trusted input source.
 
-Implementations should record the registry commit used for each instruction bundle and should warn when indexes are stale relative to the registry commit.
+The MVP reads registries from local filesystem paths or already-cloned cache directories. It does not clone, fetch, or pull remote registries. Implementations should record the registry commit used for each instruction bundle and should warn when indexes are stale relative to the registry commit.
 
 ## Unsafe instructions
 

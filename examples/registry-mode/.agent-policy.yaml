@@ -1,0 +1,16 @@
+registry:
+  type: git
+  url: ./local-registry
+  ref: main
+  cache_dir: ./local-registry
+  sync:
+    mode: manual
+local_policies:
+  - .agent-policy/policies
+output_budget:
+  max_tokens: 800
+  max_instructions: 6
+  max_required_checks: 4
+  max_blocked_actions: 3
+  include_examples: false
+  include_explanations: compact

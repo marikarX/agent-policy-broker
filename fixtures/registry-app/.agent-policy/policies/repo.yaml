@@ -1,0 +1,12 @@
+id: repo.registry-app.tests
+version: 1
+status: active
+owner: app-team
+priority: 60
+applies_when:
+  paths:
+    - src/**
+instructions:
+  - Add app-level tests for registry-backed guidance changes.
+required_checks:
+  - app.unit_tests

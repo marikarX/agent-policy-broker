@@ -7,13 +7,13 @@ The short version:
 ```text
 Git policy repo = source of truth
 Metadata index = exact filtering layer
-BM25 index = keyword retrieval layer
-Vector index = semantic recall layer
+Full-text index = keyword retrieval layer
+Vector index = future semantic recall layer
 Reranker/compiler = runtime decision layer
 Instruction bundle = generated output
 ```
 
-These layers complement each other. Storing instructions in a Git repository does not conflict with vector search, BM25, metadata filters, path/risk rules, reranking, or deterministic policy priority.
+These layers complement each other. Storing instructions in a Git repository does not conflict with full-text search, future vector search, metadata filters, path/risk rules, reranking, or deterministic policy priority.
 
 ## Source of truth
 
@@ -48,7 +48,7 @@ Policy authors edit this repository, not the generated indexes.
 
 ## Derived indexes
 
-Indexes are generated artifacts. They are built from the policy registry and selected documentation.
+Indexes are generated artifacts. They are built from local policies or the configured local registry cache, plus selected documentation configured through `index.include`.
 
 Example local cache:
 
@@ -63,8 +63,7 @@ Example local cache:
     company/
       manifest.json
       metadata.sqlite
-      bm25.tantivy/
-      vectors/
+      fulltext/
 ```
 
 Indexes can be deleted and rebuilt. They should not be treated as the source of truth.
@@ -91,11 +90,11 @@ Examples:
 
 The metadata index helps enforce governance rules such as `status: active` and policy precedence.
 
-## BM25 / keyword index
+## Full-Text / Keyword Index
 
-The BM25 index supports keyword-based retrieval.
+The full-text index supports keyword-based retrieval.
 
-The recommended OSS implementation is a Tantivy index stored as a directory, for example `bm25.tantivy/`. The docs should not imply SQLite FTS unless a future implementation intentionally chooses that backend.
+The MVP implementation uses a Tantivy index stored in a `fulltext/` directory.
 
 It is useful for exact or near-exact words such as:
 
@@ -106,11 +105,11 @@ It is useful for exact or near-exact words such as:
 - domain terms;
 - error names.
 
-BM25 complements vector search because exact words still matter.
+Full-text search complements future vector search because exact words still matter.
 
-## Vector index
+## Vector Index
 
-The vector index supports semantic retrieval.
+Vector indexing is planned but is not part of the MVP CLI indexing path. It should remain local-only unless future remote behavior is explicitly configured and documented.
 
 It is useful when task wording differs from policy wording.
 
@@ -124,9 +123,9 @@ Relevant policy wording:
   webhook handlers must preserve idempotency
 ```
 
-A vector index can help connect the task to the relevant policy even when the exact words differ.
+Future vector retrieval can help connect the task to the relevant policy even when the exact words differ.
 
-The vector index should provide candidate guidance. It should not directly decide which instructions the coding agent receives.
+Vector retrieval should provide candidate guidance. It should not directly decide which instructions the coding agent receives.
 
 ## Runtime decision layer
 
@@ -135,8 +134,8 @@ At runtime, the broker combines signals:
 ```text
 metadata filters
 + path/risk rules
-+ BM25 keyword matches
-+ vector semantic matches
++ full-text keyword matches
++ future vector semantic matches
 + deterministic policy priority
 + reranking
 + context budget
@@ -151,9 +150,9 @@ The final instruction bundle should cite policy IDs, versions, and the registry 
 1. User edits policy in Git
 2. Pull request reviews and approves the policy
 3. Registry commit changes
-4. `agent-policy registry sync` fetches the commit
+4. The local registry cache is updated outside the MVP, or `agent-policy registry sync` validates the existing cache
 5. `agent-policy index` rebuilds derived indexes
-6. `agent-policy get` queries metadata, BM25, and vector indexes
+6. `agent-policy get` queries metadata and full-text indexes
 7. Broker reranks and compiles concise instructions
 8. Output cites source policies and registry commit
 ```
@@ -166,17 +165,20 @@ Example `manifest.json`:
 
 ```json
 {
-  "registry": {
-    "url": "git@github.com:company/agent-policy-registry.git",
+  "schema_version": 2,
+  "source": {
+    "kind": "registry",
+    "name": "company",
+    "path": "/home/user/.cache/agent-policy/registries/company",
+    "url": "/home/user/.cache/agent-policy/registries/company",
     "ref": "main",
     "commit": "9d3c5f1"
   },
   "indexes": {
     "metadata": "metadata.sqlite",
-    "bm25": "bm25.tantivy/",
-    "vector": "vectors/"
+    "fulltext": "fulltext"
   },
-  "created_at": "2026-05-31T18:00:00Z"
+  "created_at_unix": 1780279200
 }
 ```
 
@@ -189,8 +191,8 @@ The main conflicts are operational, not architectural.
 | Risk | Expected handling |
 |---|---|
 | Index is stale | Store registry commit in manifest and rebuild when it changes. |
-| Vector search finds deprecated policy | Filter by metadata such as `status: active`. |
-| Semantic result is plausible but low authority | Rerank lower unless metadata also matches. |
+| Future vector search finds deprecated policy | Filter by metadata such as `status: active`. |
+| Future semantic result is plausible but low authority | Rerank lower unless metadata also matches. |
 | Repo-local policy reduces reviewed registry policy | Precedence rules prevent branch-controlled local policy from reducing registry policy unless explicitly trusted. |
 | Sensitive docs get indexed | Require explicit include paths and safe defaults. |
 | Indexes disagree | Deterministic compiler decides final bundle. |

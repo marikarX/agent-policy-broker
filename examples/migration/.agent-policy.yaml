@@ -1,0 +1,10 @@
+local_policies:
+  - .agent-policy/policies
+  - .agent-policy/migration
+output_budget:
+  max_tokens: 700
+  max_instructions: 6
+  max_required_checks: 3
+  max_blocked_actions: 3
+  include_examples: false
+  include_explanations: compact

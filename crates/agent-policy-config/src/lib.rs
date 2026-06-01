@@ -18,6 +18,8 @@ pub struct AgentPolicyConfig {
     #[serde(default)]
     pub instruction_sources: InstructionSourcesConfig,
     #[serde(default)]
+    pub codex: CodexConfig,
+    #[serde(default)]
     pub index: IndexConfig,
     #[serde(default)]
     pub output_budget: OutputBudgetConfig,
@@ -65,11 +67,40 @@ pub struct InstructionSourcesConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+pub struct CodexConfig {
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub project_doc_fallback_filenames: Vec<String>,
+    pub project_doc_max_bytes: usize,
+    pub include_global: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct IndexConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub include: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude: Vec<String>,
+    #[serde(default)]
+    pub vector: VectorIndexConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct VectorIndexConfig {
+    pub enabled: bool,
+    pub backend: VectorIndexBackend,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VectorIndexBackend {
+    SqliteVec,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +120,7 @@ impl Default for AgentPolicyConfig {
             registry: None,
             local_policies: vec![".agent-policy/policies".to_string()],
             instruction_sources: InstructionSourcesConfig::default(),
+            codex: CodexConfig::default(),
             index: IndexConfig::default(),
             output_budget: OutputBudgetConfig::default(),
         }
@@ -133,11 +165,34 @@ impl Default for InstructionSourcesConfig {
     }
 }
 
+impl Default for CodexConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            home: None,
+            current_dir: None,
+            project_doc_fallback_filenames: Vec::new(),
+            project_doc_max_bytes: 32_768,
+            include_global: false,
+        }
+    }
+}
+
 impl Default for IndexConfig {
     fn default() -> Self {
         Self {
             include: Vec::new(),
             exclude: vec!["node_modules/**".to_string()],
+            vector: VectorIndexConfig::default(),
+        }
+    }
+}
+
+impl Default for VectorIndexConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend: VectorIndexBackend::SqliteVec,
         }
     }
 }
@@ -306,6 +361,18 @@ fn validate_config_registry(root: &Mapping, path: &Path, errors: &mut Vec<Config
         }
     }
 
+    if let Some(registry_type) = mapping_get(registry, "type").and_then(Value::as_str) {
+        if registry_type != "git" {
+            push_config_error(
+                errors,
+                "config_invalid_registry_type",
+                format!("registry.type `{registry_type}` is invalid; expected git."),
+                Some(path),
+                Some("registry.type"),
+            );
+        }
+    }
+
     if let Some(sync) = mapping_get(registry, "sync").and_then(Value::as_mapping) {
         if let Some(mode) = mapping_get(sync, "mode") {
             match mode.as_str() {
@@ -454,6 +521,7 @@ struct AgentPolicyConfigPatch {
     registry: Option<RegistryConfigPatch>,
     local_policies: Option<Vec<String>>,
     instruction_sources: Option<InstructionSourcesConfigPatch>,
+    codex: Option<CodexConfigPatch>,
     index: Option<IndexConfigPatch>,
     output_budget: Option<OutputBudgetConfigPatch>,
 }
@@ -486,9 +554,28 @@ struct InstructionSourcesConfigPatch {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+struct CodexConfigPatch {
+    enabled: Option<bool>,
+    home: Option<String>,
+    current_dir: Option<String>,
+    project_doc_fallback_filenames: Option<Vec<String>>,
+    project_doc_max_bytes: Option<usize>,
+    include_global: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 struct IndexConfigPatch {
     include: Option<Vec<String>>,
     exclude: Option<Vec<String>>,
+    vector: Option<VectorIndexConfigPatch>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct VectorIndexConfigPatch {
+    enabled: Option<bool>,
+    backend: Option<VectorIndexBackend>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -521,6 +608,10 @@ impl AgentPolicyConfig {
         if let Some(instruction_sources_patch) = patch.instruction_sources {
             self.instruction_sources
                 .apply_patch(instruction_sources_patch);
+        }
+
+        if let Some(codex_patch) = patch.codex {
+            self.codex.apply_patch(codex_patch);
         }
 
         if let Some(index_patch) = patch.index {
@@ -569,8 +660,8 @@ impl RegistryConfig {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.registry_type.trim().is_empty() {
-            bail!("registry.type must not be empty");
+        if self.registry_type != "git" {
+            bail!("registry.type must be git");
         }
         if self.url.trim().is_empty() {
             bail!("registry.url must not be empty");
@@ -611,6 +702,29 @@ impl InstructionSourcesConfig {
     }
 }
 
+impl CodexConfig {
+    fn apply_patch(&mut self, patch: CodexConfigPatch) {
+        if let Some(enabled) = patch.enabled {
+            self.enabled = enabled;
+        }
+        if let Some(home) = patch.home {
+            self.home = Some(home);
+        }
+        if let Some(current_dir) = patch.current_dir {
+            self.current_dir = Some(current_dir);
+        }
+        if let Some(project_doc_fallback_filenames) = patch.project_doc_fallback_filenames {
+            self.project_doc_fallback_filenames = project_doc_fallback_filenames;
+        }
+        if let Some(project_doc_max_bytes) = patch.project_doc_max_bytes {
+            self.project_doc_max_bytes = project_doc_max_bytes;
+        }
+        if let Some(include_global) = patch.include_global {
+            self.include_global = include_global;
+        }
+    }
+}
+
 impl IndexConfig {
     fn apply_patch(&mut self, patch: IndexConfigPatch) {
         if let Some(include) = patch.include {
@@ -618,6 +732,20 @@ impl IndexConfig {
         }
         if let Some(exclude) = patch.exclude {
             self.exclude = exclude;
+        }
+        if let Some(vector_patch) = patch.vector {
+            self.vector.apply_patch(vector_patch);
+        }
+    }
+}
+
+impl VectorIndexConfig {
+    fn apply_patch(&mut self, patch: VectorIndexConfigPatch) {
+        if let Some(enabled) = patch.enabled {
+            self.enabled = enabled;
+        }
+        if let Some(backend) = patch.backend {
+            self.backend = backend;
         }
     }
 }
@@ -656,7 +784,31 @@ mod tests {
         assert_eq!(cfg.local_policies, vec![".agent-policy/policies"]);
         assert!(cfg.registry.is_none());
         assert!(cfg.index.include.is_empty());
+        assert!(!cfg.index.vector.enabled);
+        assert_eq!(cfg.index.vector.backend, VectorIndexBackend::SqliteVec);
         assert_eq!(cfg.output_budget.max_tokens, 900);
         assert!(!cfg.output_budget.include_examples);
+        assert!(!cfg.codex.enabled);
+        assert_eq!(cfg.codex.project_doc_max_bytes, 32_768);
+        assert!(!cfg.codex.include_global);
+    }
+
+    #[test]
+    fn vector_config_is_a_disabled_placeholder_by_default() {
+        let patch: AgentPolicyConfigPatch = serde_yaml::from_str(
+            r#"
+index:
+  vector:
+    enabled: true
+    backend: sqlite_vec
+"#,
+        )
+        .expect("vector config patch should parse");
+        let mut cfg = AgentPolicyConfig::default();
+
+        cfg.apply_patch(patch).expect("apply vector patch");
+
+        assert!(cfg.index.vector.enabled);
+        assert_eq!(cfg.index.vector.backend, VectorIndexBackend::SqliteVec);
     }
 }

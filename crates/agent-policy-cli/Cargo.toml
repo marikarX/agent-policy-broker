@@ -3,6 +3,12 @@ name = "agent-policy-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+description.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [[bin]]
 name = "agent-policy"
@@ -10,8 +16,19 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+axum = "0.7"
 clap.workspace = true
+globset.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tantivy.workspace = true
+tokio.workspace = true
 tracing.workspace = true
+walkdir.workspace = true
 agent-policy-core = { path = "../agent-policy-core" }
 agent-policy-config = { path = "../agent-policy-config" }
 agent-policy-discover = { path = "../agent-policy-discover" }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
