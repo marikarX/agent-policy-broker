@@ -154,6 +154,8 @@ pub struct InstructionBundle {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     pub context_budget: ContextBudgetReport,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     pub instructions: Vec<BundleInstruction>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_checks: Vec<RequiredCheck>,
@@ -340,6 +342,22 @@ pub fn build_instruction_bundle(
     let estimated_tokens =
         estimate_bundle_tokens(&instructions, &required_checks, &blocked_actions, &sources);
 
+    let context_budget_reason = if omitted > 0 {
+        Some(
+            "Lower priority or duplicate non-mandatory guidance excluded by context budget.".into(),
+        )
+    } else {
+        None
+    };
+    let warnings = if omitted > 0 {
+        vec![format!(
+            "Context budget omitted {omitted} candidate {}.",
+            pluralize(omitted, "policy", "policies")
+        )]
+    } else {
+        Vec::new()
+    };
+
     Ok(InstructionBundle {
         status: "ok".into(),
         bundle_id: stable_bundle_id(intent, &sources),
@@ -351,15 +369,9 @@ pub fn build_instruction_bundle(
             estimate_method: Some("approx_words".into()),
             candidate_policies_considered: Some(candidate_count as u32),
             candidate_policies_omitted: Some(omitted as u32),
-            reason: if omitted > 0 {
-                Some(
-                    "Lower priority or duplicate non-mandatory guidance excluded by context budget."
-                        .into(),
-                )
-            } else {
-                None
-            },
+            reason: context_budget_reason,
         },
+        warnings,
         instructions,
         required_checks,
         blocked_actions,
@@ -371,11 +383,22 @@ pub fn build_instruction_bundle(
 pub fn render_bundle_markdown(bundle: &InstructionBundle) -> String {
     let mut out = String::new();
     out.push_str("# Agent Policy Instructions\n\n");
+    out.push_str("- Bundle ID: `");
+    out.push_str(&markdown_inline(&bundle.bundle_id));
+    out.push_str("`\n");
+    out.push_str("- Policy version: `");
+    out.push_str(&markdown_inline(&bundle.policy_version));
+    out.push_str("`\n");
+    out.push_str("- Status: `");
+    out.push_str(&markdown_inline(&bundle.status));
+    out.push_str("`\n\n");
 
+    out.push_str("## Task Summary\n\n");
     if let Some(summary) = &bundle.summary {
-        out.push_str("Task: ");
-        out.push_str(summary);
+        out.push_str(&markdown_paragraph(summary));
         out.push_str("\n\n");
+    } else {
+        out.push_str("No task summary provided.\n\n");
     }
 
     out.push_str("## Instructions\n\n");
@@ -384,49 +407,161 @@ pub fn render_bundle_markdown(bundle: &InstructionBundle) -> String {
     } else {
         for instruction in &bundle.instructions {
             out.push_str("- ");
-            out.push_str(&instruction.text);
+            out.push_str(&markdown_list_text(&instruction.text));
+            let mut details = Vec::new();
+            if let Some(priority) = &instruction.priority {
+                details.push(format!("priority: {}", markdown_inline(priority)));
+            }
             if let Some(source) = &instruction.source {
-                out.push_str(" (");
-                out.push_str(&source.0);
-                out.push(')');
+                details.push(format!("source: `{}`", markdown_inline(&source.0)));
             }
+            push_details(&mut out, &details);
             out.push('\n');
         }
     }
 
-    if !bundle.required_checks.is_empty() {
-        out.push_str("\n## Required Checks\n\n");
+    out.push_str("\n## Required Checks\n\n");
+    if bundle.required_checks.is_empty() {
+        out.push_str("- None.\n");
+    } else {
         for check in &bundle.required_checks {
-            out.push_str("- ");
-            out.push_str(&check.id);
+            out.push_str("- `");
+            out.push_str(&markdown_inline(&check.id));
+            out.push('`');
+            let mut details = Vec::new();
             if let Some(source) = &check.source {
-                out.push_str(" (");
-                out.push_str(&source.0);
-                out.push(')');
+                details.push(format!("source: `{}`", markdown_inline(&source.0)));
             }
+            if let Some(resolved) = check.resolved {
+                details.push(format!("resolved: {}", if resolved { "yes" } else { "no" }));
+            }
+            push_details(&mut out, &details);
             out.push('\n');
         }
     }
 
-    if !bundle.blocked_actions.is_empty() {
-        out.push_str("\n## Blocked Actions\n\n");
+    out.push_str("\n## Blocked Actions\n\n");
+    if bundle.blocked_actions.is_empty() {
+        out.push_str("- None.\n");
+    } else {
         for action in &bundle.blocked_actions {
             out.push_str("- ");
-            out.push_str(&action.0);
+            out.push_str(&markdown_list_text(&action.0));
             out.push('\n');
         }
     }
 
-    if !bundle.sources.is_empty() {
-        out.push_str("\n## Sources\n\n");
+    out.push_str("\n## Sources\n\n");
+    if bundle.sources.is_empty() {
+        out.push_str("- None.\n");
+    } else {
         for source in &bundle.sources {
+            out.push_str("- `");
+            out.push_str(&markdown_inline(&source.0));
+            out.push_str("`\n");
+        }
+    }
+
+    out.push_str("\n## Context Budget\n\n");
+    out.push_str("- ");
+    out.push_str(&render_budget_summary(&bundle.context_budget));
+    out.push('\n');
+    if let Some(reason) = &bundle.context_budget.reason {
+        out.push_str("- ");
+        out.push_str(&markdown_list_text(reason));
+        out.push('\n');
+    }
+
+    if !bundle.warnings.is_empty() {
+        out.push_str("\n## Warnings\n\n");
+        for warning in &bundle.warnings {
             out.push_str("- ");
-            out.push_str(&source.0);
+            out.push_str(&markdown_list_text(warning));
             out.push('\n');
         }
     }
 
     out
+}
+
+fn render_budget_summary(context_budget: &ContextBudgetReport) -> String {
+    let mut parts = Vec::new();
+
+    match (
+        context_budget.estimated_tokens,
+        context_budget.max_tokens,
+        context_budget.estimate_method.as_deref(),
+    ) {
+        (Some(estimated), Some(max), Some(method)) => {
+            parts.push(format!(
+                "tokens: {estimated}/{max} ({})",
+                markdown_inline(method)
+            ));
+        }
+        (Some(estimated), Some(max), None) => {
+            parts.push(format!("tokens: {estimated}/{max}"));
+        }
+        (Some(estimated), None, Some(method)) => {
+            parts.push(format!(
+                "estimated tokens: {estimated} ({})",
+                markdown_inline(method)
+            ));
+        }
+        (Some(estimated), None, None) => {
+            parts.push(format!("estimated tokens: {estimated}"));
+        }
+        (None, Some(max), _) => {
+            parts.push(format!("max tokens: {max}"));
+        }
+        (None, None, _) => {}
+    }
+
+    if let Some(considered) = context_budget.candidate_policies_considered {
+        parts.push(format!("policies considered: {considered}"));
+    }
+    if let Some(omitted) = context_budget.candidate_policies_omitted {
+        parts.push(format!("policies omitted: {omitted}"));
+    }
+
+    if parts.is_empty() {
+        "No budget details reported.".into()
+    } else {
+        parts.join("; ")
+    }
+}
+
+fn push_details(out: &mut String, details: &[String]) {
+    if details.is_empty() {
+        return;
+    }
+
+    out.push_str(" (");
+    out.push_str(&details.join(", "));
+    out.push(')');
+}
+
+fn markdown_paragraph(text: &str) -> String {
+    normalize_markdown_text(text)
+}
+
+fn markdown_list_text(text: &str) -> String {
+    normalize_markdown_text(text)
+}
+
+fn markdown_inline(text: &str) -> String {
+    normalize_markdown_text(text).replace('`', "\\`")
+}
+
+fn normalize_markdown_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn pluralize<'a>(count: usize, singular: &'a str, plural: &'a str) -> &'a str {
+    if count == 1 {
+        singular
+    } else {
+        plural
+    }
 }
 
 pub fn render_bundle_json(bundle: &InstructionBundle) -> Result<String> {
@@ -915,6 +1050,9 @@ mod tests {
     "candidate_policies_omitted": 9,
     "reason": "Lower priority or duplicate non-mandatory guidance excluded by context budget."
   },
+  "warnings": [
+    "Context budget omitted 9 candidate policies."
+  ],
   "instructions": [
     {
       "text": "Preserve refund idempotency semantics.",
@@ -955,6 +1093,82 @@ mod tests {
     }
   ]
 }"#;
+
+    const SAMPLE_BUNDLE_MARKDOWN: &str = r#"# Agent Policy Instructions
+
+- Bundle ID: `apb_2026-05-31_001`
+- Policy version: `2026-05-31.1`
+- Status: `ok`
+
+## Task Summary
+
+Instructions for a TypeScript payment bug fix.
+
+## Instructions
+
+- Preserve refund idempotency semantics. (priority: critical, source: `domain.payments.refunds@7`)
+- Add tests for provider retry and repeated refund request handling. (priority: high, source: `domain.payments.testing@2`)
+
+## Required Checks
+
+- `typescript.lint` (source: `lang.typescript.base@1`, resolved: no)
+- `payments.unit_tests` (source: `domain.payments.testing@2`, resolved: no)
+
+## Blocked Actions
+
+- Do not edit production payment credentials.
+
+## Sources
+
+- `domain.payments.refunds@7`
+- `domain.payments.testing@2`
+- `lang.typescript.base@1`
+
+## Context Budget
+
+- tokens: 420/900 (approx_words); policies considered: 14; policies omitted: 9
+- Lower priority or duplicate non-mandatory guidance excluded by context budget.
+
+## Warnings
+
+- Context budget omitted 9 candidate policies.
+"#;
+
+    const BUDGETED_MARKDOWN_SNAPSHOT: &str = r#"# Agent Policy Instructions
+
+- Bundle ID: `apb_92c14b895f9c1aa4`
+- Policy version: `policy.high@1`
+- Status: `ok`
+
+## Task Summary
+
+No task summary provided.
+
+## Instructions
+
+- Keep the highest priority guidance. (source: `policy.high@1`)
+
+## Required Checks
+
+- None.
+
+## Blocked Actions
+
+- None.
+
+## Sources
+
+- `policy.high@1`
+
+## Context Budget
+
+- tokens: 6/900 (approx_words); policies considered: 2; policies omitted: 1
+- Lower priority or duplicate non-mandatory guidance excluded by context budget.
+
+## Warnings
+
+- Context budget omitted 1 candidate policy.
+"#;
 
     #[test]
     fn version_is_non_empty() {
@@ -1091,6 +1305,7 @@ mod tests {
                         .into(),
                 ),
             },
+            warnings: vec!["Context budget omitted 9 candidate policies.".into()],
             instructions: vec![
                 BundleInstruction {
                     text: "Preserve refund idempotency semantics.".into(),
@@ -1374,6 +1589,11 @@ mod tests {
             bundle.context_budget.reason.as_deref(),
             Some("Lower priority or duplicate non-mandatory guidance excluded by context budget.")
         );
+        assert_eq!(
+            bundle.warnings,
+            vec!["Context budget omitted 1 candidate policy."]
+        );
+        assert_eq!(render_bundle_markdown(&bundle), BUDGETED_MARKDOWN_SNAPSHOT);
     }
 
     #[test]
@@ -1447,13 +1667,13 @@ mod tests {
     }
 
     #[test]
-    fn renders_bundle_markdown_with_sources() {
+    fn renders_bundle_markdown_snapshot() {
         let bundle: InstructionBundle = serde_json::from_str(SAMPLE_BUNDLE_JSON).unwrap();
         let markdown = render_bundle_markdown(&bundle);
 
-        assert!(markdown.contains("# Agent Policy Instructions"));
-        assert!(markdown.contains("domain.payments.refunds@7"));
-        assert!(markdown.contains("## Required Checks"));
+        assert_eq!(markdown, SAMPLE_BUNDLE_MARKDOWN);
+        assert!(!markdown.contains("applies_when:"));
+        assert!(!markdown.contains("instructions:"));
     }
 
     fn fixture_simple_repo() -> PathBuf {
