@@ -3,7 +3,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::env;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use walkdir::{DirEntry, WalkDir};
 
@@ -175,12 +176,16 @@ pub fn discover_codex(
     let repo = repo.as_ref();
     let repo_abs =
         absolute_path(repo).with_context(|| format!("failed to resolve {}", repo.display()))?;
+    let repo_real = fs::canonicalize(&repo_abs)
+        .with_context(|| format!("failed to canonicalize {}", repo_abs.display()))?;
     let current_abs = match options.current_dir {
         Some(current_dir) if current_dir.is_absolute() => current_dir,
         Some(current_dir) => repo_abs.join(current_dir),
         None => repo_abs.clone(),
     };
-    let current_relative = current_abs.strip_prefix(&repo_abs).with_context(|| {
+    let current_real = fs::canonicalize(&current_abs)
+        .with_context(|| format!("failed to canonicalize {}", current_abs.display()))?;
+    let current_relative = current_real.strip_prefix(&repo_real).with_context(|| {
         format!(
             "codex current_dir {} must be inside project root {}",
             current_abs.display(),
@@ -206,12 +211,12 @@ pub fn discover_codex(
     }
 
     for dir in codex_directory_chain(current_relative) {
-        let absolute_dir = repo_abs.join(&dir);
+        let absolute_dir = repo_real.join(&dir);
         let candidates =
             codex_project_candidates(&absolute_dir, &options.project_doc_fallback_filenames);
         choose_codex_source(
             &candidates,
-            Some(&repo_abs),
+            Some(&repo_real),
             &absolute_dir,
             max_bytes,
             &mut result,
@@ -230,10 +235,10 @@ fn choose_codex_source(
 ) -> Result<()> {
     let mut selected = false;
     for candidate in candidates {
-        if !candidate.is_file() {
+        let Some(read_path) = safe_instruction_path(candidate, repo_root)? else {
             continue;
-        }
-        let file = read_instruction_file(candidate, max_bytes)
+        };
+        let file = read_instruction_file(&read_path, max_bytes)
             .with_context(|| format!("failed to read {}", candidate.display()))?;
         if selected {
             result.omissions.push(DiscoveryOmission {
@@ -277,15 +282,35 @@ struct InstructionFile {
     truncated: bool,
 }
 
-fn read_instruction_file(path: &Path, max_bytes: usize) -> Result<InstructionFile> {
-    let bytes = fs::read(path)?;
-    let original_bytes = bytes.len();
-    let truncated = original_bytes > max_bytes;
-    let bytes = if truncated {
-        bytes.into_iter().take(max_bytes).collect::<Vec<_>>()
-    } else {
-        bytes
+fn safe_instruction_path(path: &Path, repo_root: Option<&Path>) -> Result<Option<PathBuf>> {
+    let metadata = match path.symlink_metadata() {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
     };
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+
+    let canonical = fs::canonicalize(path)
+        .with_context(|| format!("failed to canonicalize {}", path.display()))?;
+    if let Some(root) = repo_root {
+        if !canonical.starts_with(root) {
+            return Ok(None);
+        }
+    }
+
+    Ok(Some(canonical))
+}
+
+fn read_instruction_file(path: &Path, max_bytes: usize) -> Result<InstructionFile> {
+    let original_bytes = path.metadata()?.len().try_into().unwrap_or(usize::MAX);
+    let truncated = original_bytes > max_bytes;
+    let mut file = File::open(path)?;
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(max_bytes as u64)
+        .read_to_end(&mut bytes)?;
     let bytes_read = bytes.len();
     let content = String::from_utf8_lossy(&bytes).into_owned();
     Ok(InstructionFile {
@@ -301,10 +326,22 @@ fn codex_project_candidates(dir: &Path, fallback_names: &[String]) -> Vec<PathBu
     candidates.extend(
         fallback_names
             .iter()
-            .filter(|name| !name.trim().is_empty())
-            .map(|name| dir.join(name)),
+            .filter_map(|name| safe_fallback_filename(name).map(|filename| dir.join(filename))),
     );
     candidates
+}
+
+fn safe_fallback_filename(name: &str) -> Option<&Path> {
+    if name.trim().is_empty() {
+        return None;
+    }
+
+    let path = Path::new(name);
+    let mut components = path.components();
+    match (components.next(), components.next()) {
+        (Some(Component::Normal(_)), None) => Some(path),
+        _ => None,
+    }
 }
 
 fn codex_directory_chain(current_relative: &Path) -> Vec<PathBuf> {
@@ -970,6 +1007,83 @@ mod tests {
         assert!(nested.truncated);
         assert_eq!(nested.bytes_read, Some(12));
         assert_eq!(nested.original_bytes, Some(37));
+    }
+
+    #[test]
+    fn codex_rejects_fallback_paths_outside_repo() {
+        let repo = create_temp_dir("codex-fallback-escape");
+        let outside = create_temp_dir("codex-fallback-outside");
+        let outside_file = outside.join("secret.md");
+        fs::write(&outside_file, "- Outside secret.\n").expect("write outside secret");
+        fs::write(repo.join("SAFE.md"), "- Safe fallback.\n").expect("write safe fallback");
+
+        let result = discover_codex(
+            &repo,
+            CodexDiscoveryOptions {
+                project_doc_fallback_filenames: vec![
+                    outside_file.display().to_string(),
+                    "../secret.md".to_string(),
+                    "SAFE.md".to_string(),
+                ],
+                ..CodexDiscoveryOptions::default()
+            },
+        )
+        .expect("discover codex");
+
+        assert_eq!(result.instruction_sources.len(), 1);
+        assert_eq!(result.instruction_sources[0].path, "SAFE.md");
+        assert!(result.instruction_sources[0]
+            .candidates
+            .iter()
+            .any(|candidate| candidate.text == "Safe fallback."));
+        assert!(!serde_json::to_string(&result)
+            .expect("serialize result")
+            .contains("Outside secret"));
+    }
+
+    #[test]
+    fn codex_rejects_symlinked_project_sources_outside_repo() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let repo = create_temp_dir("codex-symlink-escape");
+            let outside = create_temp_dir("codex-symlink-outside");
+            fs::write(outside.join("AGENTS.md"), "- Outside symlink secret.\n")
+                .expect("write outside agents");
+            symlink(outside.join("AGENTS.md"), repo.join("AGENTS.md")).expect("create symlink");
+
+            let result =
+                discover_codex(&repo, CodexDiscoveryOptions::default()).expect("discover codex");
+
+            assert!(result.instruction_sources.is_empty());
+            assert!(!serde_json::to_string(&result)
+                .expect("serialize result")
+                .contains("Outside symlink secret"));
+        }
+    }
+
+    #[test]
+    fn codex_current_dir_symlink_must_stay_inside_repo() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let repo = create_temp_dir("codex-current-symlink-repo");
+            let outside = create_temp_dir("codex-current-symlink-outside");
+            symlink(&outside, repo.join("linked-outside")).expect("create current dir symlink");
+
+            let error = discover_codex(
+                &repo,
+                CodexDiscoveryOptions {
+                    current_dir: Some(PathBuf::from("linked-outside")),
+                    ..CodexDiscoveryOptions::default()
+                },
+            )
+            .expect_err("current_dir symlink should be rejected");
+
+            assert!(error.to_string().contains("must be inside project root"));
+        }
     }
 
     fn fixture_repo() -> PathBuf {
