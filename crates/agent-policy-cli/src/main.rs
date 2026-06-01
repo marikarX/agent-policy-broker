@@ -5,10 +5,14 @@ use std::process::ExitCode;
 use agent_policy_config::{load_config, load_config_from_path, validate_config_file};
 use agent_policy_core::{
     build_instruction_bundle, collect_policy_files, load_policies_from_dirs, render_bundle_json,
-    render_bundle_markdown, validate_policy_files, BundleBuildOptions, DetectedContext,
-    OutputBudget, PolicyValidationSeverity, TaskDetails, TaskIntent, TaskType,
+    render_bundle_markdown, validate_policy_files, AppliesWhen, BundleBuildOptions,
+    DetectedContext, LoadedPolicy, OutputBudget, Policy, PolicyStatus, PolicyValidationSeverity,
+    PolicyVersion, SourceRef, TaskDetails, TaskIntent, TaskType,
 };
-use agent_policy_discover::{discover, discover_json};
+use agent_policy_discover::{
+    discover, discover_json, DiscoveryResult, InstructionSourceType,
+    MarkdownInstructionCandidateType,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "agent-policy", version, about = "Agent Policy Broker CLI")]
@@ -385,9 +389,14 @@ fn run_get(global: &GlobalArgs, args: GetArgs) -> anyhow::Result<()> {
         None => load_config(repo)?,
     };
 
-    let policies = load_policies_from_dirs(repo, &config.local_policies)?;
-    let _discovered_sources = discover(repo)?;
     let intent = build_task_intent(repo, &config, &args);
+    let mut policies = load_policies_from_dirs(repo, &config.local_policies)?;
+    let discovered_sources = discover(repo)?;
+    policies.extend(markdown_candidate_policies(
+        repo,
+        &discovered_sources,
+        &intent.files,
+    ));
     let bundle = build_instruction_bundle(
         &intent,
         &policies,
@@ -411,6 +420,141 @@ fn run_get(global: &GlobalArgs, args: GetArgs) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn markdown_candidate_policies(
+    repo: &Path,
+    discovered: &DiscoveryResult,
+    task_files: &[String],
+) -> Vec<LoadedPolicy> {
+    let mut policies = Vec::new();
+
+    for source in &discovered.instruction_sources {
+        if !scope_matches_task_files(&source.scope, task_files) {
+            continue;
+        }
+
+        for candidate in &source.candidates {
+            let (instructions, required_checks) = match candidate.candidate_type {
+                MarkdownInstructionCandidateType::Instruction => {
+                    (vec![candidate.text.clone()], Vec::new())
+                }
+                MarkdownInstructionCandidateType::RequiredCheck => {
+                    (Vec::new(), vec![candidate.text.clone()])
+                }
+            };
+
+            policies.push(LoadedPolicy {
+                policy: Policy {
+                    id: markdown_policy_id(&candidate.provenance.path, candidate.line),
+                    version: PolicyVersion::Integer(1),
+                    status: PolicyStatus::Active,
+                    owner: None,
+                    priority: None,
+                    applies_when: AppliesWhen {
+                        paths: scope_policy_paths(&candidate.provenance.scope),
+                        ..AppliesWhen::default()
+                    },
+                    instructions,
+                    required_checks,
+                    blocked_actions: Vec::new(),
+                    retrieval: None,
+                    metadata: None,
+                },
+                source_path: repo.join(&candidate.provenance.path),
+                source_ref: Some(SourceRef(markdown_source_ref(
+                    &candidate.provenance.path,
+                    candidate.line,
+                    &candidate.provenance.scope,
+                    &candidate.provenance.source_type,
+                ))),
+            });
+        }
+    }
+
+    policies
+}
+
+fn scope_matches_task_files(scope: &str, task_files: &[String]) -> bool {
+    if scope == "." {
+        return true;
+    }
+    if task_files.is_empty() {
+        return false;
+    }
+
+    let normalized_scope = normalize_scope_prefix(scope);
+    task_files.iter().any(|file| {
+        let normalized_file = normalize_task_file(file);
+        normalized_file == normalized_scope
+            || normalized_file.starts_with(&format!("{normalized_scope}/"))
+    })
+}
+
+fn scope_policy_paths(scope: &str) -> Vec<String> {
+    if scope == "." {
+        Vec::new()
+    } else {
+        vec![scope.to_string()]
+    }
+}
+
+fn markdown_source_ref(
+    path: &str,
+    line: usize,
+    scope: &str,
+    source_type: &InstructionSourceType,
+) -> String {
+    format!(
+        "markdown:{}:{} scope={} type={}",
+        path,
+        line,
+        scope,
+        instruction_source_type_name(source_type)
+    )
+}
+
+fn markdown_policy_id(path: &str, line: usize) -> String {
+    let normalized = path
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '.'
+            }
+        })
+        .collect::<String>();
+    let slug = normalized
+        .split('.')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(".");
+    format!("markdown.{slug}.{line}")
+}
+
+fn instruction_source_type_name(source_type: &InstructionSourceType) -> &'static str {
+    match source_type {
+        InstructionSourceType::AgentsMd => "agents_md",
+        InstructionSourceType::ClaudeMd => "claude_md",
+        InstructionSourceType::CopilotInstructions => "copilot_instructions",
+        InstructionSourceType::CursorRule => "cursor_rule",
+    }
+}
+
+fn normalize_scope_prefix(scope: &str) -> String {
+    scope
+        .trim_end_matches("/**")
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .to_string()
+}
+
+fn normalize_task_file(file: &str) -> String {
+    file.replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .to_string()
 }
 
 fn build_task_intent(
@@ -507,9 +651,14 @@ fn not_implemented(command_name: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        render_validation_markdown, validate_repo, Cli, Commands, GlobalArgs, OutputFormat,
-        RegistryCommands, ValidationStatus,
+        markdown_candidate_policies, render_validation_markdown, scope_matches_task_files,
+        validate_repo, Cli, Commands, GlobalArgs, OutputFormat, RegistryCommands, ValidationStatus,
     };
+    use agent_policy_core::{
+        build_instruction_bundle, BundleBuildOptions, DetectedContext, OutputBudget, TaskDetails,
+        TaskIntent,
+    };
+    use agent_policy_discover::discover;
     use clap::{error::ErrorKind, CommandFactory, Parser};
     use std::path::PathBuf;
 
@@ -668,6 +817,112 @@ mod tests {
 
         assert_eq!(report.status, ValidationStatus::Ok);
         assert_eq!(report.summary.policy_files_checked, 2);
+    }
+
+    #[test]
+    fn markdown_candidates_are_added_to_get_bundle_with_provenance() {
+        let repo = fixture_repo("nested-instructions");
+        let discovered = discover(&repo).expect("discover fixture repo");
+        let files = vec!["backend/payments/src/refunds.ts".to_string()];
+        let policies = markdown_candidate_policies(&repo, &discovered, &files);
+        let bundle = build_instruction_bundle(
+            &TaskIntent {
+                repo: Some("nested-instructions".into()),
+                branch: None,
+                task: Some(TaskDetails {
+                    summary: Some("update refunds".into()),
+                    task_type: None,
+                }),
+                files,
+                detected: Some(DetectedContext::default()),
+                risk_flags: Vec::new(),
+                expected_commands: Vec::new(),
+                expected_check_ids: Vec::new(),
+                output_budget: Some(OutputBudget::default()),
+            },
+            &policies,
+            BundleBuildOptions {
+                max_tokens: Some(900),
+                max_instructions: Some(20),
+                max_required_checks: Some(20),
+                max_blocked_actions: Some(20),
+            },
+        )
+        .expect("build bundle");
+
+        let instruction_texts = bundle
+            .instructions
+            .iter()
+            .map(|instruction| instruction.text.as_str())
+            .collect::<Vec<_>>();
+        assert!(instruction_texts.contains(&"Use the repository policy broker configuration."));
+        assert!(instruction_texts.contains(&"Backend changes require service-level tests."));
+        assert!(instruction_texts.contains(&"Preserve payment invariants."));
+        assert!(instruction_texts.contains(&"Never log payment secrets."));
+        assert!(!instruction_texts
+            .iter()
+            .any(|text| text.contains("several examples")));
+
+        assert!(bundle.required_checks.iter().any(|check| {
+            check.id == "cargo test -p payments"
+                && check.source.as_ref().is_some_and(|source| {
+                    source.0.contains("markdown:backend/payments/AGENTS.md:8")
+                        && source.0.contains("scope=backend/payments/**")
+                        && source.0.contains("type=agents_md")
+                })
+        }));
+    }
+
+    #[test]
+    fn nested_markdown_candidates_require_matching_task_files() {
+        let repo = fixture_repo("nested-instructions");
+        let discovered = discover(&repo).expect("discover fixture repo");
+        let files = vec!["frontend/src/App.tsx".to_string()];
+        let policies = markdown_candidate_policies(&repo, &discovered, &files);
+        let bundle = build_instruction_bundle(
+            &TaskIntent {
+                repo: Some("nested-instructions".into()),
+                branch: None,
+                task: None,
+                files,
+                detected: Some(DetectedContext::default()),
+                risk_flags: Vec::new(),
+                expected_commands: Vec::new(),
+                expected_check_ids: Vec::new(),
+                output_budget: None,
+            },
+            &policies,
+            BundleBuildOptions {
+                max_tokens: Some(900),
+                max_instructions: Some(20),
+                max_required_checks: Some(20),
+                max_blocked_actions: Some(20),
+            },
+        )
+        .expect("build bundle");
+
+        let instruction_texts = bundle
+            .instructions
+            .iter()
+            .map(|instruction| instruction.text.as_str())
+            .collect::<Vec<_>>();
+        assert!(instruction_texts.contains(&"Prefer accessible controls."));
+        assert!(!instruction_texts.contains(&"Backend changes require service-level tests."));
+        assert!(!instruction_texts.contains(&"Preserve payment invariants."));
+    }
+
+    #[test]
+    fn nested_scope_matching_is_file_based() {
+        assert!(scope_matches_task_files(
+            "backend/**",
+            &["backend/payments/src/refunds.ts".into()]
+        ));
+        assert!(!scope_matches_task_files(
+            "backend/**",
+            &["frontend/src/App.tsx".into()]
+        ));
+        assert!(!scope_matches_task_files("backend/**", &[]));
+        assert!(scope_matches_task_files(".", &[]));
     }
 
     fn fixture_repo(name: &str) -> PathBuf {

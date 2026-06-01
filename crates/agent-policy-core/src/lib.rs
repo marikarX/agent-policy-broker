@@ -42,6 +42,7 @@ pub struct Policy {
 pub struct LoadedPolicy {
     pub policy: Policy,
     pub source_path: PathBuf,
+    pub source_ref: Option<SourceRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -280,7 +281,7 @@ pub fn build_instruction_bundle(
 
     for matched_policy in &matched {
         let policy = &matched_policy.loaded.policy;
-        let source = policy_source_ref(policy);
+        let source = policy_source_ref(matched_policy.loaded);
         let mut included_policy_content = false;
 
         for instruction in &policy.instructions {
@@ -848,7 +849,12 @@ fn priority_label(priority: u32) -> String {
     .to_string()
 }
 
-fn policy_source_ref(policy: &Policy) -> SourceRef {
+fn policy_source_ref(loaded: &LoadedPolicy) -> SourceRef {
+    if let Some(source_ref) = &loaded.source_ref {
+        return source_ref.clone();
+    }
+
+    let policy = &loaded.policy;
     SourceRef(format!(
         "{}@{}",
         policy.id,
@@ -973,6 +979,7 @@ where
             Ok(LoadedPolicy {
                 policy,
                 source_path: path,
+                source_ref: None,
             })
         })
         .collect()
@@ -2023,6 +2030,7 @@ No task summary provided.
                 metadata: None,
             },
             source_path: PathBuf::from(format!("{id}.yaml")),
+            source_ref: None,
         }
     }
 
