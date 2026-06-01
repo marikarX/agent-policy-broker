@@ -70,6 +70,21 @@ pub struct IndexConfig {
     pub include: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude: Vec<String>,
+    #[serde(default)]
+    pub vector: VectorIndexConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct VectorIndexConfig {
+    pub enabled: bool,
+    pub backend: VectorIndexBackend,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VectorIndexBackend {
+    SqliteVec,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -138,6 +153,16 @@ impl Default for IndexConfig {
         Self {
             include: Vec::new(),
             exclude: vec!["node_modules/**".to_string()],
+            vector: VectorIndexConfig::default(),
+        }
+    }
+}
+
+impl Default for VectorIndexConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend: VectorIndexBackend::SqliteVec,
         }
     }
 }
@@ -501,6 +526,14 @@ struct InstructionSourcesConfigPatch {
 struct IndexConfigPatch {
     include: Option<Vec<String>>,
     exclude: Option<Vec<String>>,
+    vector: Option<VectorIndexConfigPatch>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct VectorIndexConfigPatch {
+    enabled: Option<bool>,
+    backend: Option<VectorIndexBackend>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -631,6 +664,20 @@ impl IndexConfig {
         if let Some(exclude) = patch.exclude {
             self.exclude = exclude;
         }
+        if let Some(vector_patch) = patch.vector {
+            self.vector.apply_patch(vector_patch);
+        }
+    }
+}
+
+impl VectorIndexConfig {
+    fn apply_patch(&mut self, patch: VectorIndexConfigPatch) {
+        if let Some(enabled) = patch.enabled {
+            self.enabled = enabled;
+        }
+        if let Some(backend) = patch.backend {
+            self.backend = backend;
+        }
     }
 }
 
@@ -668,7 +715,28 @@ mod tests {
         assert_eq!(cfg.local_policies, vec![".agent-policy/policies"]);
         assert!(cfg.registry.is_none());
         assert!(cfg.index.include.is_empty());
+        assert!(!cfg.index.vector.enabled);
+        assert_eq!(cfg.index.vector.backend, VectorIndexBackend::SqliteVec);
         assert_eq!(cfg.output_budget.max_tokens, 900);
         assert!(!cfg.output_budget.include_examples);
+    }
+
+    #[test]
+    fn vector_config_is_a_disabled_placeholder_by_default() {
+        let patch: AgentPolicyConfigPatch = serde_yaml::from_str(
+            r#"
+index:
+  vector:
+    enabled: true
+    backend: sqlite_vec
+"#,
+        )
+        .expect("vector config patch should parse");
+        let mut cfg = AgentPolicyConfig::default();
+
+        cfg.apply_patch(patch).expect("apply vector patch");
+
+        assert!(cfg.index.vector.enabled);
+        assert_eq!(cfg.index.vector.backend, VectorIndexBackend::SqliteVec);
     }
 }

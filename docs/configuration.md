@@ -40,6 +40,9 @@ index:
     - src
     - secrets
     - node_modules
+  vector:
+    enabled: false
+    backend: sqlite_vec
 
 output_budget:
   max_tokens: 900
@@ -162,9 +165,14 @@ index:
     - src
     - secrets
     - node_modules
+  vector:
+    enabled: false
+    backend: sqlite_vec
 ```
 
 Source code should not be indexed by default. Users may explicitly include source paths if they understand the privacy and performance tradeoffs.
+
+`index.vector` is a placeholder for future local vector retrieval support. It is disabled by default, and the initial supported backend name is `sqlite_vec`. Enabling this setting does not currently install a backend, make embedding calls, or change policy authority.
 
 ## `output_budget`
 

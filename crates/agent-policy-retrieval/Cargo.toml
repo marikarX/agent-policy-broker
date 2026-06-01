@@ -1,0 +1,11 @@
+[package]
+name = "agent-policy-retrieval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+sqlite-vec = []
+
+[dependencies]

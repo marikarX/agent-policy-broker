@@ -623,6 +623,7 @@ instructions:
             index: agent_policy_config::IndexConfig {
                 include: vec!["docs/**/*.md".to_string()],
                 exclude: Vec::new(),
+                vector: agent_policy_config::VectorIndexConfig::default(),
             },
             ..AgentPolicyConfig::default()
         };

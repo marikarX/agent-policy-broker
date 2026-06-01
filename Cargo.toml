@@ -4,6 +4,7 @@ members = [
     "crates/agent-policy-core",
     "crates/agent-policy-config",
     "crates/agent-policy-discover",
+    "crates/agent-policy-retrieval",
 ]
 resolver = "2"
 
