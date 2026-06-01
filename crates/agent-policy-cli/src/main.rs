@@ -1,6 +1,8 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::collections::BTreeMap;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -283,8 +285,8 @@ fn run_migrate(global: &GlobalArgs, args: MigrateArgs) -> anyhow::Result<()> {
 }
 
 fn write_migration_drafts(repo: &Path, drafts: &[PolicyDraft]) -> anyhow::Result<()> {
-    let migration_dir = repo.join(".agent-policy").join("migration");
-    fs::create_dir_all(&migration_dir)?;
+    let repo = repo.canonicalize()?;
+    let migration_dir = ensure_safe_migration_dir(&repo)?;
 
     for draft in drafts {
         let relative_target = Path::new(&draft.target_path);
@@ -307,11 +309,88 @@ fn write_migration_drafts(repo: &Path, drafts: &[PolicyDraft]) -> anyhow::Result
         if parent != migration_dir {
             anyhow::bail!("refusing to write nested migration draft path");
         }
-        fs::write(target, &draft.policy_yaml)?;
+        write_migration_draft_file(&target, &draft.policy_yaml)?;
     }
 
     Ok(())
 }
+
+fn ensure_safe_migration_dir(repo: &Path) -> anyhow::Result<PathBuf> {
+    let agent_policy_dir = repo.join(".agent-policy");
+    ensure_safe_directory(&agent_policy_dir, ".agent-policy")?;
+
+    let migration_dir = agent_policy_dir.join("migration");
+    ensure_safe_directory(&migration_dir, ".agent-policy/migration")?;
+
+    let migration_dir = migration_dir.canonicalize()?;
+    if !migration_dir.starts_with(repo) {
+        anyhow::bail!("refusing to write migration drafts outside the repository");
+    }
+
+    Ok(migration_dir)
+}
+
+fn ensure_safe_directory(path: &Path, label: &str) -> anyhow::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                anyhow::bail!("refusing to use symlinked migration directory component {label}");
+            }
+            if !metadata.is_dir() {
+                anyhow::bail!("migration directory component {label} is not a directory");
+            }
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            fs::create_dir(path)?;
+            let metadata = fs::symlink_metadata(path)?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                anyhow::bail!("refusing to use unsafe migration directory component {label}");
+            }
+        }
+        Err(error) => return Err(error.into()),
+    }
+
+    Ok(())
+}
+
+fn write_migration_draft_file(target: &Path, policy_yaml: &str) -> anyhow::Result<()> {
+    match fs::symlink_metadata(target) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                anyhow::bail!("refusing to overwrite symlinked migration draft");
+            }
+            if !metadata.is_file() {
+                anyhow::bail!("refusing to overwrite non-file migration draft path");
+            }
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    set_no_follow(&mut options);
+
+    let mut file = options.open(target)?;
+    file.write_all(policy_yaml.as_bytes())?;
+    file.sync_all()?;
+
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn set_no_follow(options: &mut OpenOptions) {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    const O_NOFOLLOW: i32 = 0o400000;
+    options.custom_flags(O_NOFOLLOW);
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+fn set_no_follow(_options: &mut OpenOptions) {}
+
+#[cfg(not(unix))]
+fn set_no_follow(_options: &mut OpenOptions) {}
 
 fn inspect_repo(repo: &Path, discovered: DiscoveryResult) -> InspectionReport {
     let repo_name = repo
@@ -2507,6 +2586,79 @@ mod tests {
         );
         assert_eq!(instruction_file_contents(repo), instruction_files_before);
         assert_only_migration_files_were_added(&repo_files_before, &repo_file_contents(repo));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn migrate_write_rejects_symlinked_draft_file() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempRepo::copy_fixture("nested-instructions");
+        let repo = temp.path();
+        let migration_dir = repo.join(".agent-policy").join("migration");
+        fs::create_dir_all(&migration_dir).expect("create migration dir");
+        let outside_target = repo.join("outside-target.txt");
+        fs::write(&outside_target, "ORIGINAL_SENTINEL").expect("write outside target");
+        symlink(
+            &outside_target,
+            migration_dir.join("local.backend.payments.payments.yaml"),
+        )
+        .expect("create symlinked draft");
+
+        let cli = Cli::try_parse_from([
+            "agent-policy",
+            "--repo",
+            repo.to_str().expect("utf8 repo"),
+            "migrate",
+            "--write",
+            "--format",
+            "json",
+        ])
+        .expect("parse migrate write");
+
+        let error = run(cli).expect_err("symlinked draft must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("refusing to overwrite symlinked migration draft"),
+            "unexpected error: {error:#}"
+        );
+        assert_eq!(
+            fs::read_to_string(&outside_target).expect("read outside target"),
+            "ORIGINAL_SENTINEL"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn migrate_write_rejects_symlinked_migration_directory_component() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempRepo::copy_fixture("nested-instructions");
+        let repo = temp.path();
+        let outside_dir = repo.join("outside-agent-policy");
+        fs::create_dir(&outside_dir).expect("create outside dir");
+        symlink(&outside_dir, repo.join(".agent-policy")).expect("create .agent-policy symlink");
+
+        let cli = Cli::try_parse_from([
+            "agent-policy",
+            "--repo",
+            repo.to_str().expect("utf8 repo"),
+            "migrate",
+            "--write",
+            "--format",
+            "json",
+        ])
+        .expect("parse migrate write");
+
+        let error = run(cli).expect_err("symlinked .agent-policy must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("refusing to use symlinked migration directory component .agent-policy"),
+            "unexpected error: {error:#}"
+        );
+        assert!(!outside_dir.join("migration").exists());
     }
 
     #[test]
