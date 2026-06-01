@@ -22,7 +22,7 @@ use walkdir::{DirEntry, WalkDir};
 use crate::git::{git_rev_parse, is_git_worktree};
 use crate::paths::resolve_configured_path;
 
-const INDEX_SCHEMA_VERSION: u32 = 2;
+const INDEX_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IndexBuildReport {
@@ -132,8 +132,13 @@ pub(crate) fn build_metadata_index_with_cache_dir(
 
     fs::create_dir_all(&index_dir)?;
     write_metadata_sqlite(&metadata_path, &policies, source.commit.as_deref())?;
-    let fulltext_document_count =
-        write_fulltext_index(&fulltext_path, &source.root, config, &policies)?;
+    let fulltext_document_count = write_fulltext_index(
+        &fulltext_path,
+        &source.root,
+        config,
+        &policies,
+        source.kind == IndexSourceKind::Repo,
+    )?;
     let manifest = index_manifest(&source)?;
     let manifest_json = serde_json::to_string_pretty(&manifest)?;
     fs::write(&manifest_path, format!("{manifest_json}\n"))?;
@@ -366,6 +371,7 @@ fn write_fulltext_index(
     source_root: &Path,
     config: &AgentPolicyConfig,
     policies: &[LoadedPolicy],
+    include_source_documents: bool,
 ) -> anyhow::Result<usize> {
     if path.exists() {
         fs::remove_dir_all(path)?;
@@ -405,34 +411,36 @@ fn write_fulltext_index(
         }
     }
 
-    for source in discover(source_root)?.instruction_sources {
-        for candidate in source.candidates {
-            let kind = match candidate.candidate_type {
-                MarkdownInstructionCandidateType::Instruction => "markdown_instruction",
-                MarkdownInstructionCandidateType::RequiredCheck => "markdown_required_check",
-            };
+    if include_source_documents {
+        for source in discover(source_root)?.instruction_sources {
+            for candidate in source.candidates {
+                let kind = match candidate.candidate_type {
+                    MarkdownInstructionCandidateType::Instruction => "markdown_instruction",
+                    MarkdownInstructionCandidateType::RequiredCheck => "markdown_required_check",
+                };
+                writer.add_document(fulltext_document(
+                    &fields,
+                    &markdown_candidate_id(&candidate.provenance.path, candidate.line),
+                    kind,
+                    &candidate.text,
+                    candidate.provenance.path,
+                    Some(candidate.line),
+                ))?;
+                count += 1;
+            }
+        }
+
+        for selected_doc in selected_docs(source_root, &config.index)? {
             writer.add_document(fulltext_document(
                 &fields,
-                &markdown_candidate_id(&candidate.provenance.path, candidate.line),
-                kind,
-                &candidate.text,
-                candidate.provenance.path,
-                Some(candidate.line),
+                &format!("doc:{}", selected_doc.relative_path),
+                "selected_doc",
+                &selected_doc.content,
+                selected_doc.relative_path,
+                None,
             ))?;
             count += 1;
         }
-    }
-
-    for selected_doc in selected_docs(source_root, &config.index)? {
-        writer.add_document(fulltext_document(
-            &fields,
-            &format!("doc:{}", selected_doc.relative_path),
-            "selected_doc",
-            &selected_doc.content,
-            selected_doc.relative_path,
-            None,
-        ))?;
-        count += 1;
     }
 
     writer.commit()?;
