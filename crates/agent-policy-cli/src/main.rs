@@ -2625,18 +2625,15 @@ fn load_get_policies_with_cache_dir(
 
     if let Some(registry) = &config.registry {
         let source = index_registry_source(repo, registry)?;
-        let indexed_ids = get_indexed_policy_ids(cache_dir, &source, &mut warnings)?;
+        get_indexed_policy_ids(cache_dir, &source, &mut warnings)?;
         let registry_policies = load_registry_policies(repo, registry)?;
-        policies.extend(filter_loaded_policies(
-            registry_policies,
-            indexed_ids.as_ref(),
-        ));
+        policies.extend(filter_active_loaded_policies(registry_policies));
         policies.extend(load_policies_from_dirs(repo, &config.local_policies)?);
     } else {
         let source = index_repo_source(repo)?;
-        let indexed_ids = get_indexed_policy_ids(cache_dir, &source, &mut warnings)?;
+        get_indexed_policy_ids(cache_dir, &source, &mut warnings)?;
         let local_policies = load_policies_from_dirs(repo, &config.local_policies)?;
-        policies.extend(filter_loaded_policies(local_policies, indexed_ids.as_ref()));
+        policies.extend(filter_active_loaded_policies(local_policies));
     }
 
     Ok(GetPolicyLoad { policies, warnings })
@@ -2699,17 +2696,11 @@ fn read_indexed_policy_ids(path: &Path) -> anyhow::Result<BTreeSet<String>> {
         .map_err(anyhow::Error::from)
 }
 
-fn filter_loaded_policies(
-    policies: Vec<LoadedPolicy>,
-    indexed_ids: Option<&BTreeSet<String>>,
-) -> Vec<LoadedPolicy> {
-    match indexed_ids {
-        Some(ids) => policies
-            .into_iter()
-            .filter(|loaded| ids.contains(&loaded.policy.id))
-            .collect(),
-        None => policies,
-    }
+fn filter_active_loaded_policies(policies: Vec<LoadedPolicy>) -> Vec<LoadedPolicy> {
+    policies
+        .into_iter()
+        .filter(|loaded| loaded.policy.status == PolicyStatus::Active)
+        .collect()
 }
 
 fn load_registry_policies(
@@ -3534,6 +3525,39 @@ instructions:
             get_bundle_json(&indexed.policies),
             get_bundle_json(&direct),
             "indexed lookup should produce the same bundle content as direct loading"
+        );
+    }
+
+    #[test]
+    fn get_does_not_allow_metadata_index_to_suppress_authoritative_policies() {
+        let temp = TempDir::new("get-tampered-index");
+        let repo = temp.path().join("repo");
+        write_get_policy_fixture(&repo);
+        let config = AgentPolicyConfig::default();
+        let cache_dir = temp.path().join("cache");
+        let report =
+            build_metadata_index_with_cache_dir(&repo, &config, &cache_dir).expect("build index");
+        let connection = Connection::open(&report.metadata_path).expect("open metadata sqlite");
+        connection
+            .execute("DELETE FROM policies WHERE id = 'org.get.active'", [])
+            .expect("tamper metadata index");
+        drop(connection);
+
+        let loaded = load_get_policies_with_cache_dir(&repo, &config, &cache_dir)
+            .expect("load policies with tampered index");
+
+        assert!(loaded.warnings.is_empty());
+        assert_eq!(
+            policy_ids(&loaded.policies),
+            vec!["org.get.active".to_string()],
+            "authoritative policy files must remain authoritative even when the derived index omits them"
+        );
+        assert_eq!(
+            get_bundle_json(&loaded.policies),
+            get_bundle_json(
+                &load_policies_from_dirs(&repo, &config.local_policies)
+                    .expect("load direct policies")
+            )
         );
     }
 
