@@ -132,19 +132,22 @@ pub(crate) use crate::commands::validate::{
     render_validation_markdown, validate_repo, ValidationStatus,
 };
 #[cfg(test)]
-pub(crate) use crate::indexing::{build_metadata_index_with_cache_dir, IndexManifest};
+pub(crate) use crate::indexing::{
+    build_metadata_index_with_cache_dir, index_repo_source, search_fulltext_candidates,
+    IndexManifest,
+};
 #[cfg(test)]
 mod tests {
     use super::{
         build_metadata_index_with_cache_dir, detect_inspection_conflicts,
-        detect_inspection_duplicates, inspect_repo, load_get_policies_with_cache_dir,
-        load_registry_policies, markdown_candidate_policies, migration_dry_run_report,
-        render_inspection_json, render_inspection_markdown, render_migration_dry_run_json,
-        render_migration_dry_run_markdown, render_registry_sync_json,
-        render_registry_sync_markdown, render_validation_markdown, run, scope_matches_task_files,
-        sync_registry, validate_repo, Cli, Commands, GlobalArgs, IndexManifest,
-        InspectionCandidate, MigrationClass, OutputFormat, RegistryCommands, RegistrySyncStatus,
-        ValidationStatus,
+        detect_inspection_duplicates, index_repo_source, inspect_repo,
+        load_get_policies_with_cache_dir, load_registry_policies, markdown_candidate_policies,
+        migration_dry_run_report, render_inspection_json, render_inspection_markdown,
+        render_migration_dry_run_json, render_migration_dry_run_markdown,
+        render_registry_sync_json, render_registry_sync_markdown, render_validation_markdown, run,
+        scope_matches_task_files, search_fulltext_candidates, sync_registry, validate_repo, Cli,
+        Commands, GlobalArgs, IndexManifest, InspectionCandidate, MigrationClass, OutputFormat,
+        RegistryCommands, RegistrySyncStatus, ValidationStatus,
     };
     use agent_policy_config::{
         load_config, AgentPolicyConfig, RegistryConfig, RegistrySyncConfig, SyncMode,
@@ -535,6 +538,9 @@ instructions:
         assert_eq!(manifest.source.name, "registry-cache");
         assert_eq!(manifest.source.commit.as_deref(), Some(head.as_str()));
         assert_eq!(manifest.indexes.metadata, "metadata.sqlite");
+        assert_eq!(manifest.indexes.fulltext, "fulltext");
+        assert!(report.fulltext_path.exists());
+        assert!(report.fulltext_document_count >= 1);
 
         let connection = Connection::open(&report.metadata_path).expect("open metadata sqlite");
         let row = connection
@@ -582,6 +588,165 @@ instructions:
         assert!(values.contains(&("repos".to_string(), "agent-policy-broker".to_string())));
         assert!(values.contains(&("risk_flags".to_string(), "storage".to_string())));
         assert!(values.contains(&("task_types".to_string(), "implementation".to_string())));
+    }
+
+    #[test]
+    fn index_builds_fulltext_candidates_with_nested_provenance_and_selected_docs() {
+        let temp = TempRepo::copy_fixture("nested-instructions");
+        let repo = temp.path();
+        let policies_dir = repo.join(".agent-policy").join("policies");
+        fs::create_dir_all(&policies_dir).expect("create policy dir");
+        fs::write(
+            policies_dir.join("payments.yaml"),
+            r#"id: org.payments.refunds
+version: 1
+status: active
+priority: 30
+applies_when:
+  paths:
+    - backend/payments/**
+retrieval:
+  semantic_terms:
+    - refund idempotency settlement retry
+instructions:
+  - Preserve payment invariants during refund changes.
+"#,
+        )
+        .expect("write payments policy");
+        fs::create_dir_all(repo.join("docs")).expect("create docs dir");
+        fs::write(
+            repo.join("docs").join("refund-playbook.md"),
+            "# Refund playbook\n\nUse settlement reconciliation for refund retries.\n",
+        )
+        .expect("write selected doc");
+        let config = AgentPolicyConfig {
+            index: agent_policy_config::IndexConfig {
+                include: vec!["docs/**/*.md".to_string()],
+                exclude: Vec::new(),
+            },
+            ..AgentPolicyConfig::default()
+        };
+        let cache_dir = repo.join(".cache-test");
+
+        let report = build_metadata_index_with_cache_dir(repo, &config, &cache_dir)
+            .expect("build fulltext index");
+        assert!(report.fulltext_path.exists());
+        assert!(report.fulltext_document_count >= 10);
+
+        let source = index_repo_source(repo).expect("repo source");
+        let mut warnings = Vec::new();
+        let candidates = search_fulltext_candidates(
+            &cache_dir,
+            &source,
+            "refund settlement retry",
+            8,
+            &mut warnings,
+        )
+        .expect("search fulltext candidates");
+        let ids = candidates
+            .iter()
+            .map(|candidate| candidate.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(warnings.is_empty());
+        assert!(ids.contains(&"org.payments.refunds"));
+        assert!(ids.contains(&"doc:docs/refund-playbook.md"));
+
+        let markdown_candidates =
+            search_fulltext_candidates(&cache_dir, &source, "payment secrets", 8, &mut warnings)
+                .expect("search markdown candidates");
+        assert!(markdown_candidates.iter().any(|candidate| candidate
+            .id
+            .starts_with("markdown.backend.payments.agents.md.")));
+    }
+
+    #[test]
+    fn bm25_candidates_do_not_override_exact_metadata_or_policy_priority() {
+        let temp = TempDir::new("bm25-priority");
+        let repo = temp.path().join("repo");
+        let policies_dir = repo.join(".agent-policy").join("policies");
+        fs::create_dir_all(&policies_dir).expect("create policy dir");
+        fs::write(
+            policies_dir.join("high.yaml"),
+            r#"id: org.priority.high
+version: 1
+status: active
+priority: 100
+applies_when:
+  paths:
+    - src/payments/**
+instructions:
+  - Follow the high priority payment change process.
+"#,
+        )
+        .expect("write high priority policy");
+        fs::write(
+            policies_dir.join("low.yaml"),
+            r#"id: org.priority.low
+version: 1
+status: active
+priority: 1
+applies_when:
+  paths:
+    - src/payments/**
+instructions:
+  - Refund settlement retry keywords are useful candidate guidance only.
+"#,
+        )
+        .expect("write low priority policy");
+        let config = AgentPolicyConfig::default();
+        let cache_dir = temp.path().join("cache");
+        build_metadata_index_with_cache_dir(&repo, &config, &cache_dir).expect("build index");
+
+        let source = index_repo_source(&repo).expect("repo source");
+        let mut warnings = Vec::new();
+        let candidates = search_fulltext_candidates(
+            &cache_dir,
+            &source,
+            "refund settlement retry",
+            4,
+            &mut warnings,
+        )
+        .expect("search fulltext candidates");
+        assert_eq!(
+            candidates.first().map(|candidate| candidate.id.as_str()),
+            Some("org.priority.low")
+        );
+
+        let policies = load_policies_from_dirs(&repo, &config.local_policies)
+            .expect("load policies for bundle");
+        let bundle = build_instruction_bundle(
+            &TaskIntent {
+                repo: Some("repo".to_string()),
+                branch: None,
+                task: Some(TaskDetails {
+                    summary: Some("refund settlement retry".to_string()),
+                    task_type: None,
+                }),
+                files: vec!["src/payments/refunds.ts".to_string()],
+                detected: Some(DetectedContext::default()),
+                risk_flags: Vec::new(),
+                expected_commands: Vec::new(),
+                expected_check_ids: Vec::new(),
+                output_budget: None,
+            },
+            &policies,
+            BundleBuildOptions {
+                max_tokens: Some(2000),
+                max_instructions: Some(10),
+                max_required_checks: Some(10),
+                max_blocked_actions: Some(10),
+            },
+        )
+        .expect("build bundle");
+
+        assert_eq!(
+            bundle
+                .instructions
+                .first()
+                .map(|instruction| instruction.text.as_str()),
+            Some("Follow the high priority payment change process.")
+        );
     }
 
     #[test]
