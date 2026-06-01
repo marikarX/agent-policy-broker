@@ -502,7 +502,14 @@ instructions:
 
     #[test]
     fn loads_registry_policies_from_configured_cache_dir() {
-        let repo = fixture_repo("registry-app");
+        let temp = TempDir::new("registry-app-local-path");
+        let repo = temp.path().join("registry-app");
+        let registry_cache = temp.path().join("local-registry");
+        copy_dir_all_without_git(&fixture_repo("registry-app"), &repo)
+            .expect("copy registry app fixture");
+        copy_dir_all_without_git(&fixture_repo("local-registry"), &registry_cache)
+            .expect("copy local registry fixture");
+
         let config = load_config(&repo).expect("registry config should load");
         let registry = config.registry.expect("registry should be configured");
 
@@ -516,7 +523,7 @@ instructions:
                 .source_ref
                 .as_ref()
                 .map(|source| source.0.as_str()),
-            Some("local-registry:org.security.secrets@3#0123456789ab")
+            Some("local-registry:org.security.secrets@3")
         );
     }
 
@@ -1699,6 +1706,24 @@ instructions:
             let target = destination.join(entry.file_name());
             if file_type.is_dir() {
                 copy_dir_all(&entry.path(), &target)?;
+            } else if file_type.is_file() {
+                fs::copy(entry.path(), target)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn copy_dir_all_without_git(source: &Path, destination: &Path) -> std::io::Result<()> {
+        fs::create_dir_all(destination)?;
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            if entry.file_name() == ".git" {
+                continue;
+            }
+            let file_type = entry.file_type()?;
+            let target = destination.join(entry.file_name());
+            if file_type.is_dir() {
+                copy_dir_all_without_git(&entry.path(), &target)?;
             } else if file_type.is_file() {
                 fs::copy(entry.path(), target)?;
             }
