@@ -15,6 +15,8 @@ fn missing_config_returns_defaults() {
     let config = load_config(&repo_dir).expect("missing repo config should fall back to defaults");
 
     assert_eq!(config, AgentPolicyConfig::default());
+    assert!(!config.index.vector.enabled);
+    assert!(config.index.include.is_empty());
 }
 
 #[test]

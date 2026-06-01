@@ -172,7 +172,7 @@ index:
 
 Source code should not be indexed by default. Users may explicitly include source paths if they understand the privacy and performance tradeoffs.
 
-`index.vector` is a placeholder for future local vector retrieval support. It is disabled by default, and the initial supported backend name is `sqlite_vec`. Enabling this setting does not currently install a backend, make embedding calls, or change policy authority.
+`index.vector` is disabled by default. The prototype local vector backend is currently compiled only with the Rust `sqlite-vec` feature, but it is an in-memory deterministic implementation while sqlite-vec integration is evaluated. It makes no remote embedding calls, indexes only caller-provided policy/retrieval text or explicitly included docs, and returns candidate IDs and scores only. Vector matches are candidate guidance; metadata filters, policy priority, and output budget still control the final bundle.
 
 ## `output_budget`
 

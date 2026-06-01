@@ -45,6 +45,7 @@ Local indexing should follow these rules:
 - indexing should be explicit;
 - indexed paths should be configurable;
 - source code should not be indexed by default;
+- local vector prototypes should use deterministic local embeddings unless an explicitly configured future backend documents otherwise;
 - generated index files should remain local unless the user explicitly moves or uploads them;
 - users should be able to delete and rebuild the index;
 - documentation should clearly explain what is indexed.
