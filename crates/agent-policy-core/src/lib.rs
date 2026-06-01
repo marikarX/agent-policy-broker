@@ -249,6 +249,13 @@ pub fn build_instruction_bundle(
             .priority
             .unwrap_or(0)
             .cmp(&left.loaded.policy.priority.unwrap_or(0))
+            .then_with(|| right.score.rank.cmp(&left.score.rank))
+            .then_with(|| {
+                right
+                    .score
+                    .path_specificity
+                    .cmp(&left.score.path_specificity)
+            })
             .then_with(|| left.loaded.policy.id.cmp(&right.loaded.policy.id))
             .then_with(|| left.loaded.source_path.cmp(&right.loaded.source_path))
     });
@@ -424,6 +431,13 @@ pub fn render_bundle_json(bundle: &InstructionBundle) -> Result<String> {
 struct MatchedPolicy<'a> {
     loaded: &'a LoadedPolicy,
     reason: String,
+    score: MatchScore,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct MatchScore {
+    rank: u32,
+    path_specificity: u32,
 }
 
 fn match_policy<'a>(
@@ -437,20 +451,21 @@ fn match_policy<'a>(
 
     let applies = &policy.applies_when;
     let mut reasons = Vec::new();
+    let mut score = MatchScore::default();
 
-    if !matches_task_type(applies, intent, &mut reasons) {
+    if !matches_task_type(applies, intent, &mut reasons, &mut score) {
         return Ok(None);
     }
-    if !matches_risk_flags(applies, intent, &mut reasons) {
+    if !matches_risk_flags(applies, intent, &mut reasons, &mut score) {
         return Ok(None);
     }
-    if !matches_paths(applies, intent, &mut reasons)? {
+    if !matches_paths(applies, intent, &mut reasons, &mut score)? {
         return Ok(None);
     }
-    if !matches_detected(applies, intent, &mut reasons) {
+    if !matches_detected(applies, intent, &mut reasons, &mut score) {
         return Ok(None);
     }
-    if !matches_repo(applies, intent, &mut reasons) {
+    if !matches_repo(applies, intent, &mut reasons, &mut score) {
         return Ok(None);
     }
 
@@ -464,13 +479,18 @@ fn match_policy<'a>(
         format!("Matched {}.", reasons.join(", "))
     };
 
-    Ok(Some(MatchedPolicy { loaded, reason }))
+    Ok(Some(MatchedPolicy {
+        loaded,
+        reason,
+        score,
+    }))
 }
 
 fn matches_task_type(
     applies: &AppliesWhen,
     intent: &TaskIntent,
     reasons: &mut Vec<String>,
+    score: &mut MatchScore,
 ) -> bool {
     let Some(task_type) = intent
         .task
@@ -488,6 +508,7 @@ fn matches_task_type(
         .any(|candidate| candidate == task_type)
     {
         reasons.push(format!("task type `{}`", task_type.0));
+        score.rank += 100;
         true
     } else {
         false
@@ -498,12 +519,14 @@ fn matches_risk_flags(
     applies: &AppliesWhen,
     intent: &TaskIntent,
     reasons: &mut Vec<String>,
+    score: &mut MatchScore,
 ) -> bool {
     if applies.risk_flags.is_empty() || intent.risk_flags.is_empty() {
         return true;
     }
     if let Some(flag) = first_intersection(&applies.risk_flags, &intent.risk_flags) {
         reasons.push(format!("risk flag `{flag}`"));
+        score.rank += 500;
         true
     } else {
         false
@@ -514,6 +537,7 @@ fn matches_paths(
     applies: &AppliesWhen,
     intent: &TaskIntent,
     reasons: &mut Vec<String>,
+    score: &mut MatchScore,
 ) -> Result<bool> {
     if applies.paths.is_empty() || intent.files.is_empty() {
         return Ok(true);
@@ -521,8 +545,10 @@ fn matches_paths(
 
     let mut builder = GlobSetBuilder::new();
     for pattern in &applies.paths {
+        let normalized_pattern = normalize_policy_path(pattern);
         builder.add(
-            Glob::new(pattern).with_context(|| format!("invalid policy path glob `{pattern}`"))?,
+            Glob::new(&normalized_pattern)
+                .with_context(|| format!("invalid policy path glob `{pattern}`"))?,
         );
     }
     let globset = builder
@@ -530,8 +556,17 @@ fn matches_paths(
         .context("failed to build policy path glob set")?;
 
     for file in &intent.files {
-        if globset.is_match(file) {
-            reasons.push(format!("path `{file}`"));
+        let normalized_file = normalize_policy_path(file);
+        let matches = globset.matches(&normalized_file);
+        if let Some(best_match) = matches
+            .iter()
+            .map(|index| &applies.paths[*index])
+            .max_by_key(|pattern| path_pattern_specificity(pattern))
+        {
+            let specificity = path_pattern_specificity(best_match);
+            score.rank += specificity;
+            score.path_specificity = score.path_specificity.max(specificity);
+            reasons.push(format!("path `{file}` matched `{best_match}`"));
             return Ok(true);
         }
     }
@@ -539,7 +574,12 @@ fn matches_paths(
     Ok(false)
 }
 
-fn matches_detected(applies: &AppliesWhen, intent: &TaskIntent, reasons: &mut Vec<String>) -> bool {
+fn matches_detected(
+    applies: &AppliesWhen,
+    intent: &TaskIntent,
+    reasons: &mut Vec<String>,
+    score: &mut MatchScore,
+) -> bool {
     let Some(detected) = &intent.detected else {
         return true;
     };
@@ -547,6 +587,7 @@ fn matches_detected(applies: &AppliesWhen, intent: &TaskIntent, reasons: &mut Ve
     if !applies.languages.is_empty() && !detected.languages.is_empty() {
         if let Some(language) = first_intersection(&applies.languages, &detected.languages) {
             reasons.push(format!("language `{language}`"));
+            score.rank += 100;
         } else {
             return false;
         }
@@ -555,6 +596,7 @@ fn matches_detected(applies: &AppliesWhen, intent: &TaskIntent, reasons: &mut Ve
     if !applies.frameworks.is_empty() && !detected.frameworks.is_empty() {
         if let Some(framework) = first_intersection(&applies.frameworks, &detected.frameworks) {
             reasons.push(format!("framework `{framework}`"));
+            score.rank += 100;
         } else {
             return false;
         }
@@ -568,6 +610,7 @@ fn matches_detected(applies: &AppliesWhen, intent: &TaskIntent, reasons: &mut Ve
                 .any(|candidate| candidate == package_manager)
             {
                 reasons.push(format!("package manager `{package_manager}`"));
+                score.rank += 100;
             } else {
                 return false;
             }
@@ -577,7 +620,12 @@ fn matches_detected(applies: &AppliesWhen, intent: &TaskIntent, reasons: &mut Ve
     true
 }
 
-fn matches_repo(applies: &AppliesWhen, intent: &TaskIntent, reasons: &mut Vec<String>) -> bool {
+fn matches_repo(
+    applies: &AppliesWhen,
+    intent: &TaskIntent,
+    reasons: &mut Vec<String>,
+    score: &mut MatchScore,
+) -> bool {
     let Some(repo) = &intent.repo else {
         return true;
     };
@@ -586,6 +634,7 @@ fn matches_repo(applies: &AppliesWhen, intent: &TaskIntent, reasons: &mut Vec<St
     }
     if applies.repos.iter().any(|candidate| candidate == repo) {
         reasons.push(format!("repo `{repo}`"));
+        score.rank += 50;
         true
     } else {
         false
@@ -600,6 +649,45 @@ fn is_global_policy(applies: &AppliesWhen) -> bool {
         && applies.package_managers.is_empty()
         && applies.task_types.is_empty()
         && applies.risk_flags.is_empty()
+}
+
+fn normalize_policy_path(path: &str) -> String {
+    path.replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .to_string()
+}
+
+fn path_pattern_specificity(pattern: &str) -> u32 {
+    let normalized = normalize_policy_path(pattern);
+    let literal_chars = normalized
+        .chars()
+        .filter(|character| !matches!(character, '*' | '?' | '[' | ']' | '{' | '}' | ','))
+        .count() as u32;
+    let components = normalized
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .count() as u32;
+    let wildcard_count = normalized
+        .chars()
+        .filter(|character| matches!(character, '*' | '?' | '[' | ']' | '{' | '}' | ','))
+        .count() as u32;
+    let base = if !contains_glob_meta(&normalized) {
+        1_000
+    } else if normalized.contains("**") {
+        400
+    } else {
+        800
+    };
+
+    (base + literal_chars.saturating_mul(10) + components.saturating_mul(5))
+        .saturating_sub(wildcard_count.saturating_mul(5))
+}
+
+fn contains_glob_meta(pattern: &str) -> bool {
+    pattern
+        .chars()
+        .any(|character| matches!(character, '*' | '?' | '[' | ']' | '{' | '}' | ','))
 }
 
 fn first_intersection<'a>(left: &'a [String], right: &[String]) -> Option<&'a str> {
@@ -1104,6 +1192,145 @@ mod tests {
     }
 
     #[test]
+    fn path_globs_match_any_task_file_and_explain_pattern() {
+        let policies = vec![test_policy(
+            "domain.payments.tests",
+            AppliesWhen {
+                paths: vec!["src/payments/**".into(), "tests/payments/**".into()],
+                ..AppliesWhen::default()
+            },
+            "Use payment-specific test guidance.",
+        )];
+        let intent = test_intent(vec!["README.md", "tests/payments/refunds.test.ts"]);
+
+        let bundle = build_instruction_bundle(&intent, &policies, default_build_options())
+            .expect("path glob should match");
+
+        assert_eq!(bundle.instructions.len(), 1);
+        assert_eq!(
+            bundle.explanations[0].reason,
+            "Matched path `tests/payments/refunds.test.ts` matched `tests/payments/**`."
+        );
+    }
+
+    #[test]
+    fn nested_globs_match_migration_files() {
+        let policies = vec![test_policy(
+            "backend.migrations",
+            AppliesWhen {
+                paths: vec!["backend/**/migrations/*.sql".into()],
+                ..AppliesWhen::default()
+            },
+            "Review migration rollback behavior.",
+        )];
+        let intent = test_intent(vec!["backend/billing/db/migrations/20260601_refunds.sql"]);
+
+        let bundle = build_instruction_bundle(&intent, &policies, default_build_options())
+            .expect("nested migration glob should match");
+
+        assert_eq!(bundle.instructions.len(), 1);
+        assert!(bundle.explanations[0]
+            .reason
+            .contains("backend/**/migrations/*.sql"));
+    }
+
+    #[test]
+    fn unmatched_path_scoped_policy_is_excluded_when_files_are_provided() {
+        let policies = vec![test_policy(
+            "domain.payments.refunds",
+            AppliesWhen {
+                paths: vec!["src/payments/**".into()],
+                ..AppliesWhen::default()
+            },
+            "Preserve refund idempotency.",
+        )];
+        let intent = test_intent(vec!["src/orders/order.ts"]);
+
+        let bundle = build_instruction_bundle(&intent, &policies, default_build_options())
+            .expect("bundle should build without path match");
+
+        assert!(bundle.instructions.is_empty());
+        assert!(bundle.explanations.is_empty());
+    }
+
+    #[test]
+    fn more_specific_path_matches_rank_above_broad_globs() {
+        let policies = vec![
+            test_policy(
+                "broad.src",
+                AppliesWhen {
+                    paths: vec!["src/**".into()],
+                    ..AppliesWhen::default()
+                },
+                "Broad source guidance.",
+            ),
+            test_policy(
+                "payments.src",
+                AppliesWhen {
+                    paths: vec!["src/payments/**".into()],
+                    ..AppliesWhen::default()
+                },
+                "Payment source guidance.",
+            ),
+            test_policy(
+                "exact.refunds",
+                AppliesWhen {
+                    paths: vec!["src/payments/refunds.ts".into()],
+                    ..AppliesWhen::default()
+                },
+                "Exact refund file guidance.",
+            ),
+        ];
+        let intent = test_intent(vec!["./src/payments/refunds.ts"]);
+
+        let bundle = build_instruction_bundle(&intent, &policies, default_build_options())
+            .expect("bundle should build");
+
+        assert_eq!(
+            bundle
+                .instructions
+                .iter()
+                .map(|instruction| instruction.text.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Exact refund file guidance.",
+                "Payment source guidance.",
+                "Broad source guidance.",
+            ]
+        );
+    }
+
+    #[test]
+    fn broad_path_policy_does_not_outrank_domain_policy_without_priority() {
+        let policies = vec![
+            test_policy(
+                "broad.src",
+                AppliesWhen {
+                    paths: vec!["src/**".into()],
+                    ..AppliesWhen::default()
+                },
+                "Broad source guidance.",
+            ),
+            test_policy(
+                "domain.payments",
+                AppliesWhen {
+                    risk_flags: vec!["payments".into()],
+                    ..AppliesWhen::default()
+                },
+                "Payment domain guidance.",
+            ),
+        ];
+        let mut intent = test_intent(vec!["src/payments/refunds.ts"]);
+        intent.risk_flags = vec!["payments".into()];
+
+        let bundle = build_instruction_bundle(&intent, &policies, default_build_options())
+            .expect("bundle should build");
+
+        assert_eq!(bundle.instructions[0].text, "Payment domain guidance.");
+        assert_eq!(bundle.instructions[1].text, "Broad source guidance.");
+    }
+
+    #[test]
     fn renders_bundle_markdown_with_sources() {
         let bundle: InstructionBundle = serde_json::from_str(SAMPLE_BUNDLE_JSON).unwrap();
         let markdown = render_bundle_markdown(&bundle);
@@ -1115,5 +1342,47 @@ mod tests {
 
     fn fixture_simple_repo() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/simple-repo")
+    }
+
+    fn test_policy(id: &str, applies_when: AppliesWhen, instruction: &str) -> LoadedPolicy {
+        LoadedPolicy {
+            policy: Policy {
+                id: id.into(),
+                version: PolicyVersion::Integer(1),
+                status: PolicyStatus::Active,
+                owner: None,
+                priority: None,
+                applies_when,
+                instructions: vec![instruction.into()],
+                required_checks: Vec::new(),
+                blocked_actions: Vec::new(),
+                retrieval: None,
+                metadata: None,
+            },
+            source_path: PathBuf::from(format!("{id}.yaml")),
+        }
+    }
+
+    fn test_intent(files: Vec<&str>) -> TaskIntent {
+        TaskIntent {
+            repo: None,
+            branch: None,
+            task: None,
+            files: files.into_iter().map(str::to_string).collect(),
+            detected: None,
+            risk_flags: Vec::new(),
+            expected_commands: Vec::new(),
+            expected_check_ids: Vec::new(),
+            output_budget: None,
+        }
+    }
+
+    fn default_build_options() -> BundleBuildOptions {
+        BundleBuildOptions {
+            max_tokens: None,
+            max_instructions: None,
+            max_required_checks: None,
+            max_blocked_actions: None,
+        }
     }
 }
