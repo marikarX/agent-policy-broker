@@ -7,6 +7,7 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
+use globset::{Glob, GlobSetBuilder};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use walkdir::WalkDir;
@@ -221,6 +222,480 @@ pub struct BundleExplanation {
     pub instruction: String,
     pub source: SourceRef,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleBuildOptions {
+    pub max_tokens: Option<u32>,
+    pub max_instructions: Option<u32>,
+    pub max_required_checks: Option<u32>,
+    pub max_blocked_actions: Option<u32>,
+}
+
+pub fn build_instruction_bundle(
+    intent: &TaskIntent,
+    policies: &[LoadedPolicy],
+    options: BundleBuildOptions,
+) -> Result<InstructionBundle> {
+    let mut matched = policies
+        .iter()
+        .filter_map(|loaded| match_policy(intent, loaded).transpose())
+        .collect::<Result<Vec<_>>>()?;
+
+    matched.sort_by(|left, right| {
+        right
+            .loaded
+            .policy
+            .priority
+            .unwrap_or(0)
+            .cmp(&left.loaded.policy.priority.unwrap_or(0))
+            .then_with(|| left.loaded.policy.id.cmp(&right.loaded.policy.id))
+            .then_with(|| left.loaded.source_path.cmp(&right.loaded.source_path))
+    });
+
+    let candidate_count = matched.len();
+    let instruction_limit = options.max_instructions.map(|value| value as usize);
+    let required_check_limit = options.max_required_checks.map(|value| value as usize);
+    let blocked_action_limit = options.max_blocked_actions.map(|value| value as usize);
+
+    let mut instructions: Vec<BundleInstruction> = Vec::new();
+    let mut required_checks: Vec<RequiredCheck> = Vec::new();
+    let mut blocked_actions: Vec<BlockedAction> = Vec::new();
+    let mut sources: Vec<SourceRef> = Vec::new();
+    let mut explanations: Vec<BundleExplanation> = Vec::new();
+
+    for matched_policy in &matched {
+        let policy = &matched_policy.loaded.policy;
+        let source = policy_source_ref(policy);
+        push_unique(&mut sources, source.clone());
+
+        for instruction in &policy.instructions {
+            if instruction_limit.is_some_and(|limit| instructions.len() >= limit) {
+                continue;
+            }
+
+            instructions.push(BundleInstruction {
+                text: instruction.clone(),
+                priority: policy.priority.map(priority_label),
+                source: Some(source.clone()),
+            });
+            explanations.push(BundleExplanation {
+                instruction: instruction.clone(),
+                source: source.clone(),
+                reason: matched_policy.reason.clone(),
+            });
+        }
+
+        for check in &policy.required_checks {
+            if required_check_limit.is_some_and(|limit| required_checks.len() >= limit) {
+                continue;
+            }
+
+            let candidate = RequiredCheck {
+                id: check.clone(),
+                source: Some(source.clone()),
+                resolved: Some(false),
+            };
+            if !required_checks
+                .iter()
+                .any(|existing| existing.id == candidate.id)
+            {
+                required_checks.push(candidate);
+            }
+        }
+
+        for action in &policy.blocked_actions {
+            if blocked_action_limit.is_some_and(|limit| blocked_actions.len() >= limit) {
+                continue;
+            }
+            push_unique(&mut blocked_actions, action.clone());
+        }
+    }
+
+    let estimated_tokens =
+        estimate_bundle_tokens(&instructions, &required_checks, &blocked_actions, &sources);
+    let omitted = matched
+        .iter()
+        .filter(|matched_policy| {
+            !matched_policy
+                .loaded
+                .policy
+                .instructions
+                .iter()
+                .any(|text| {
+                    instructions
+                        .iter()
+                        .any(|instruction| &instruction.text == text)
+                })
+        })
+        .count();
+
+    Ok(InstructionBundle {
+        status: "ok".into(),
+        bundle_id: stable_bundle_id(intent, &sources),
+        policy_version: stable_policy_version(&sources),
+        summary: intent.task.as_ref().and_then(|task| task.summary.clone()),
+        context_budget: ContextBudgetReport {
+            max_tokens: options.max_tokens,
+            estimated_tokens: Some(estimated_tokens),
+            estimate_method: Some("approx_words".into()),
+            candidate_policies_considered: Some(candidate_count as u32),
+            candidate_policies_omitted: Some(omitted as u32),
+            reason: if omitted > 0 {
+                Some("Lower priority policy instructions excluded by context budget.".into())
+            } else {
+                None
+            },
+        },
+        instructions,
+        required_checks,
+        blocked_actions,
+        sources,
+        explanations,
+    })
+}
+
+pub fn render_bundle_markdown(bundle: &InstructionBundle) -> String {
+    let mut out = String::new();
+    out.push_str("# Agent Policy Instructions\n\n");
+
+    if let Some(summary) = &bundle.summary {
+        out.push_str("Task: ");
+        out.push_str(summary);
+        out.push_str("\n\n");
+    }
+
+    out.push_str("## Instructions\n\n");
+    if bundle.instructions.is_empty() {
+        out.push_str("- No matching policy instructions.\n");
+    } else {
+        for instruction in &bundle.instructions {
+            out.push_str("- ");
+            out.push_str(&instruction.text);
+            if let Some(source) = &instruction.source {
+                out.push_str(" (");
+                out.push_str(&source.0);
+                out.push(')');
+            }
+            out.push('\n');
+        }
+    }
+
+    if !bundle.required_checks.is_empty() {
+        out.push_str("\n## Required Checks\n\n");
+        for check in &bundle.required_checks {
+            out.push_str("- ");
+            out.push_str(&check.id);
+            if let Some(source) = &check.source {
+                out.push_str(" (");
+                out.push_str(&source.0);
+                out.push(')');
+            }
+            out.push('\n');
+        }
+    }
+
+    if !bundle.blocked_actions.is_empty() {
+        out.push_str("\n## Blocked Actions\n\n");
+        for action in &bundle.blocked_actions {
+            out.push_str("- ");
+            out.push_str(&action.0);
+            out.push('\n');
+        }
+    }
+
+    if !bundle.sources.is_empty() {
+        out.push_str("\n## Sources\n\n");
+        for source in &bundle.sources {
+            out.push_str("- ");
+            out.push_str(&source.0);
+            out.push('\n');
+        }
+    }
+
+    out
+}
+
+pub fn render_bundle_json(bundle: &InstructionBundle) -> Result<String> {
+    serde_json::to_string_pretty(bundle).context("failed to serialize instruction bundle")
+}
+
+#[derive(Debug)]
+struct MatchedPolicy<'a> {
+    loaded: &'a LoadedPolicy,
+    reason: String,
+}
+
+fn match_policy<'a>(
+    intent: &TaskIntent,
+    loaded: &'a LoadedPolicy,
+) -> Result<Option<MatchedPolicy<'a>>> {
+    let policy = &loaded.policy;
+    if policy.status != PolicyStatus::Active {
+        return Ok(None);
+    }
+
+    let applies = &policy.applies_when;
+    let mut reasons = Vec::new();
+
+    if !matches_task_type(applies, intent, &mut reasons) {
+        return Ok(None);
+    }
+    if !matches_risk_flags(applies, intent, &mut reasons) {
+        return Ok(None);
+    }
+    if !matches_paths(applies, intent, &mut reasons)? {
+        return Ok(None);
+    }
+    if !matches_detected(applies, intent, &mut reasons) {
+        return Ok(None);
+    }
+    if !matches_repo(applies, intent, &mut reasons) {
+        return Ok(None);
+    }
+
+    if reasons.is_empty() && !is_global_policy(applies) {
+        return Ok(None);
+    }
+
+    let reason = if reasons.is_empty() {
+        "Matched global active policy.".to_string()
+    } else {
+        format!("Matched {}.", reasons.join(", "))
+    };
+
+    Ok(Some(MatchedPolicy { loaded, reason }))
+}
+
+fn matches_task_type(
+    applies: &AppliesWhen,
+    intent: &TaskIntent,
+    reasons: &mut Vec<String>,
+) -> bool {
+    let Some(task_type) = intent
+        .task
+        .as_ref()
+        .and_then(|task| task.task_type.as_ref())
+    else {
+        return true;
+    };
+    if applies.task_types.is_empty() {
+        return true;
+    }
+    if applies
+        .task_types
+        .iter()
+        .any(|candidate| candidate == task_type)
+    {
+        reasons.push(format!("task type `{}`", task_type.0));
+        true
+    } else {
+        false
+    }
+}
+
+fn matches_risk_flags(
+    applies: &AppliesWhen,
+    intent: &TaskIntent,
+    reasons: &mut Vec<String>,
+) -> bool {
+    if applies.risk_flags.is_empty() || intent.risk_flags.is_empty() {
+        return true;
+    }
+    if let Some(flag) = first_intersection(&applies.risk_flags, &intent.risk_flags) {
+        reasons.push(format!("risk flag `{flag}`"));
+        true
+    } else {
+        false
+    }
+}
+
+fn matches_paths(
+    applies: &AppliesWhen,
+    intent: &TaskIntent,
+    reasons: &mut Vec<String>,
+) -> Result<bool> {
+    if applies.paths.is_empty() || intent.files.is_empty() {
+        return Ok(true);
+    }
+
+    let mut builder = GlobSetBuilder::new();
+    for pattern in &applies.paths {
+        builder.add(
+            Glob::new(pattern).with_context(|| format!("invalid policy path glob `{pattern}`"))?,
+        );
+    }
+    let globset = builder
+        .build()
+        .context("failed to build policy path glob set")?;
+
+    for file in &intent.files {
+        if globset.is_match(file) {
+            reasons.push(format!("path `{file}`"));
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+fn matches_detected(applies: &AppliesWhen, intent: &TaskIntent, reasons: &mut Vec<String>) -> bool {
+    let Some(detected) = &intent.detected else {
+        return true;
+    };
+
+    if !applies.languages.is_empty() && !detected.languages.is_empty() {
+        if let Some(language) = first_intersection(&applies.languages, &detected.languages) {
+            reasons.push(format!("language `{language}`"));
+        } else {
+            return false;
+        }
+    }
+
+    if !applies.frameworks.is_empty() && !detected.frameworks.is_empty() {
+        if let Some(framework) = first_intersection(&applies.frameworks, &detected.frameworks) {
+            reasons.push(format!("framework `{framework}`"));
+        } else {
+            return false;
+        }
+    }
+
+    if !applies.package_managers.is_empty() {
+        if let Some(package_manager) = &detected.package_manager {
+            if applies
+                .package_managers
+                .iter()
+                .any(|candidate| candidate == package_manager)
+            {
+                reasons.push(format!("package manager `{package_manager}`"));
+            } else {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+fn matches_repo(applies: &AppliesWhen, intent: &TaskIntent, reasons: &mut Vec<String>) -> bool {
+    let Some(repo) = &intent.repo else {
+        return true;
+    };
+    if applies.repos.is_empty() {
+        return true;
+    }
+    if applies.repos.iter().any(|candidate| candidate == repo) {
+        reasons.push(format!("repo `{repo}`"));
+        true
+    } else {
+        false
+    }
+}
+
+fn is_global_policy(applies: &AppliesWhen) -> bool {
+    applies.repos.is_empty()
+        && applies.paths.is_empty()
+        && applies.languages.is_empty()
+        && applies.frameworks.is_empty()
+        && applies.package_managers.is_empty()
+        && applies.task_types.is_empty()
+        && applies.risk_flags.is_empty()
+}
+
+fn first_intersection<'a>(left: &'a [String], right: &[String]) -> Option<&'a str> {
+    left.iter()
+        .find(|candidate| right.iter().any(|value| value == *candidate))
+        .map(String::as_str)
+}
+
+fn priority_label(priority: u32) -> String {
+    match priority {
+        90.. => "critical",
+        70..=89 => "high",
+        40..=69 => "normal",
+        _ => "low",
+    }
+    .to_string()
+}
+
+fn policy_source_ref(policy: &Policy) -> SourceRef {
+    SourceRef(format!(
+        "{}@{}",
+        policy.id,
+        policy_version_to_string(&policy.version)
+    ))
+}
+
+fn policy_version_to_string(version: &PolicyVersion) -> String {
+    match version {
+        PolicyVersion::Integer(value) => value.to_string(),
+        PolicyVersion::Text(value) => value.clone(),
+    }
+}
+
+fn stable_bundle_id(intent: &TaskIntent, sources: &[SourceRef]) -> String {
+    let mut seed = String::new();
+    if let Some(summary) = intent.task.as_ref().and_then(|task| task.summary.as_ref()) {
+        seed.push_str(summary);
+    }
+    for file in &intent.files {
+        seed.push_str(file);
+    }
+    for source in sources {
+        seed.push_str(&source.0);
+    }
+
+    let hash = seed.bytes().fold(0xcbf29ce484222325u64, |acc, byte| {
+        (acc ^ byte as u64).wrapping_mul(0x100000001b3)
+    });
+    format!("apb_{hash:016x}")
+}
+
+fn stable_policy_version(sources: &[SourceRef]) -> String {
+    if sources.is_empty() {
+        return "none".into();
+    }
+
+    sources
+        .iter()
+        .map(|source| source.0.as_str())
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
+fn estimate_bundle_tokens(
+    instructions: &[BundleInstruction],
+    checks: &[RequiredCheck],
+    actions: &[BlockedAction],
+    sources: &[SourceRef],
+) -> u32 {
+    let words = instructions
+        .iter()
+        .flat_map(|instruction| instruction.text.split_whitespace())
+        .count()
+        + checks
+            .iter()
+            .flat_map(|check| check.id.split_whitespace())
+            .count()
+        + actions
+            .iter()
+            .flat_map(|action| action.0.split_whitespace())
+            .count()
+        + sources
+            .iter()
+            .flat_map(|source| source.0.split_whitespace())
+            .count();
+
+    words as u32
+}
+
+fn push_unique<T>(items: &mut Vec<T>, item: T)
+where
+    T: PartialEq,
+{
+    if !items.contains(&item) {
+        items.push(item);
+    }
 }
 
 pub fn load_policies_from_dirs<I, P>(
@@ -571,5 +1046,74 @@ mod tests {
             value["blocked_actions"][0],
             "Do not edit production payment credentials."
         );
+    }
+
+    #[test]
+    fn builds_bundle_from_active_matching_policies() {
+        let policies = load_policies_from_dirs(fixture_simple_repo(), [".agent-policy/policies"])
+            .expect("load fixture policies");
+        let intent = TaskIntent {
+            repo: Some("simple-repo".into()),
+            branch: None,
+            task: Some(TaskDetails {
+                summary: Some("fix refund retry handling".into()),
+                task_type: Some(TaskType("fix_bug".into())),
+            }),
+            files: vec!["src/payments/refunds.ts".into()],
+            detected: Some(DetectedContext {
+                languages: vec!["typescript".into()],
+                frameworks: Vec::new(),
+                package_manager: None,
+            }),
+            risk_flags: Vec::new(),
+            expected_commands: Vec::new(),
+            expected_check_ids: Vec::new(),
+            output_budget: None,
+        };
+
+        let bundle = build_instruction_bundle(
+            &intent,
+            &policies,
+            BundleBuildOptions {
+                max_tokens: Some(900),
+                max_instructions: Some(8),
+                max_required_checks: Some(4),
+                max_blocked_actions: Some(4),
+            },
+        )
+        .expect("build bundle");
+
+        assert_eq!(bundle.status, "ok");
+        assert_eq!(
+            bundle
+                .sources
+                .iter()
+                .map(|source| source.0.as_str())
+                .collect::<Vec<_>>(),
+            vec!["domain.payments.refunds@1", "lang.typescript.base@1"]
+        );
+        assert!(bundle.instructions.iter().any(|instruction| {
+            instruction
+                .text
+                .contains("Preserve idempotency for refund creation")
+        }));
+        assert!(bundle
+            .required_checks
+            .iter()
+            .any(|check| check.id == "payments.unit_tests"));
+    }
+
+    #[test]
+    fn renders_bundle_markdown_with_sources() {
+        let bundle: InstructionBundle = serde_json::from_str(SAMPLE_BUNDLE_JSON).unwrap();
+        let markdown = render_bundle_markdown(&bundle);
+
+        assert!(markdown.contains("# Agent Policy Instructions"));
+        assert!(markdown.contains("domain.payments.refunds@7"));
+        assert!(markdown.contains("## Required Checks"));
+    }
+
+    fn fixture_simple_repo() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/simple-repo")
     }
 }
