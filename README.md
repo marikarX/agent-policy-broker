@@ -195,6 +195,48 @@ The broker may return:
 - [Security](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
 
+## Install
+
+Agent Policy Broker is currently installed from source. From the repository root:
+
+```bash
+cargo install --path crates/agent-policy-cli
+```
+
+This installs the `agent-policy` binary into Cargo's bin directory, typically `~/.cargo/bin`.
+
+For local development without installing:
+
+```bash
+cargo run -p agent-policy-cli -- --help
+```
+
+## Build and release
+
+Build an optimized local binary with:
+
+```bash
+cargo build --release -p agent-policy-cli
+```
+
+The binary is written to `target/release/agent-policy`.
+
+Before tagging or sharing a build, run the same checks used by CI:
+
+```bash
+cargo check --workspace --all-targets
+cargo test --workspace --all-targets
+```
+
+Cross-platform builds can be produced with standard Cargo targets when the Rust target and any required system toolchain are installed:
+
+```bash
+rustup target add x86_64-unknown-linux-gnu
+cargo build --release -p agent-policy-cli --target x86_64-unknown-linux-gnu
+```
+
+The CLI uses `rusqlite` with bundled SQLite, which keeps local builds simple across common Linux, macOS, and Windows environments.
+
 ## Repository layout
 
 ```text
