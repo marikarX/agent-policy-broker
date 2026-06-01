@@ -92,8 +92,9 @@ fn run(cli: Cli) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, GlobalArgs, OutputFormat};
-    use clap::CommandFactory;
+    use super::{Cli, Commands, GlobalArgs, OutputFormat, RegistryCommands};
+    use clap::{error::ErrorKind, CommandFactory, Parser};
+    use std::path::PathBuf;
 
     #[test]
     fn clap_command_builds() {
@@ -109,5 +110,47 @@ mod tests {
             // don't accidentally remove CLI-level flags.
         ];
         let _ = std::mem::size_of::<GlobalArgs>();
+    }
+
+    #[test]
+    fn parse_get_with_repo() {
+        let cli = Cli::try_parse_from(["agent-policy", "get", "--repo", "."]).expect("parse get");
+        assert_eq!(cli.global.repo, Some(PathBuf::from(".")));
+        assert!(matches!(cli.command, Commands::Get));
+    }
+
+    #[test]
+    fn parse_discover_with_json_format() {
+        let cli =
+            Cli::try_parse_from(["agent-policy", "discover", "--format", "json"]).expect("parse discover");
+        assert!(matches!(cli.global.format, Some(OutputFormat::Json)));
+        assert!(matches!(cli.command, Commands::Discover));
+    }
+
+    #[test]
+    fn parse_registry_sync_with_no_network() {
+        let cli = Cli::try_parse_from(["agent-policy", "registry", "sync", "--no-network"])
+            .expect("parse registry sync");
+        assert!(cli.global.no_network);
+        match cli.command {
+            Commands::Registry(registry) => {
+                assert!(matches!(registry.command, RegistryCommands::Sync));
+            }
+            _ => panic!("expected registry command"),
+        }
+    }
+
+    #[test]
+    fn invalid_format_value_fails() {
+        let err = Cli::try_parse_from(["agent-policy", "discover", "--format", "xml"])
+            .expect_err("expected invalid format to fail");
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn unknown_subcommand_fails() {
+        let err = Cli::try_parse_from(["agent-policy", "unknown"])
+            .expect_err("expected unknown subcommand to fail");
+        assert_eq!(err.kind(), ErrorKind::InvalidSubcommand);
     }
 }
