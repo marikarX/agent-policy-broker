@@ -278,13 +278,25 @@ pub fn build_instruction_bundle(
     let mut seen_required_checks: BTreeSet<String> = BTreeSet::new();
     let mut seen_blocked_actions: BTreeSet<BlockedAction> = BTreeSet::new();
     let mut omitted = 0usize;
+    let conflict_resolution = resolve_instruction_conflicts(&matched)?;
 
     for matched_policy in &matched {
         let policy = &matched_policy.loaded.policy;
         let source = policy_source_ref(matched_policy.loaded);
         let mut included_policy_content = false;
+        let mut conflict_omitted_policy_content = false;
 
         for instruction in &policy.instructions {
+            if conflict_resolution
+                .omitted_instructions
+                .contains(&ConflictItemKey {
+                    source: source.0.clone(),
+                    text: instruction.clone(),
+                })
+            {
+                conflict_omitted_policy_content = true;
+                continue;
+            }
             if !seen_instructions.insert(instruction.clone()) {
                 continue;
             }
@@ -336,7 +348,7 @@ pub fn build_instruction_bundle(
             blocked_actions.push(action.clone());
         }
 
-        if !included_policy_content {
+        if !included_policy_content && !conflict_omitted_policy_content {
             omitted += 1;
         }
     }
@@ -351,14 +363,13 @@ pub fn build_instruction_bundle(
     } else {
         None
     };
-    let warnings = if omitted > 0 {
-        vec![format!(
+    let mut warnings = conflict_resolution.warnings;
+    if omitted > 0 {
+        warnings.push(format!(
             "Context budget omitted {omitted} candidate {}.",
             pluralize(omitted, "policy", "policies")
-        )]
-    } else {
-        Vec::new()
-    };
+        ));
+    }
 
     Ok(InstructionBundle {
         status: "ok".into(),
@@ -577,10 +588,237 @@ struct MatchedPolicy<'a> {
     score: MatchScore,
 }
 
+#[derive(Debug, Default)]
+struct ConflictResolution {
+    omitted_instructions: BTreeSet<ConflictItemKey>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ConflictItemKey {
+    source: String,
+    text: String,
+}
+
+#[derive(Debug)]
+struct InstructionConflictCandidate {
+    source: SourceRef,
+    text: String,
+    path_specificity: u32,
+    source_path: PathBuf,
+    package_manager: Option<&'static str>,
+    generated_file_mode: GeneratedFileMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GeneratedFileMode {
+    None,
+    AvoidDirectEdit,
+    DirectEdit,
+}
+
+#[derive(Debug)]
+struct TestCommandCandidate {
+    source: SourceRef,
+    command: String,
+    scope: String,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct MatchScore {
     rank: u32,
     path_specificity: u32,
+}
+
+fn resolve_instruction_conflicts(matched: &[MatchedPolicy<'_>]) -> Result<ConflictResolution> {
+    let mut resolution = ConflictResolution::default();
+    let mut instruction_candidates = Vec::new();
+    let mut test_command_candidates = Vec::new();
+    let mut global_safety_texts = Vec::new();
+
+    for matched_policy in matched {
+        let policy = &matched_policy.loaded.policy;
+        let source = policy_source_ref(matched_policy.loaded);
+
+        if is_global_policy(&policy.applies_when) {
+            for instruction in &policy.instructions {
+                if is_safety_rule(instruction) {
+                    global_safety_texts.push((source.clone(), instruction.as_str()));
+                }
+            }
+            for action in &policy.blocked_actions {
+                global_safety_texts.push((source.clone(), action.0.as_str()));
+            }
+        }
+
+        for instruction in &policy.instructions {
+            instruction_candidates.push(InstructionConflictCandidate {
+                source: source.clone(),
+                text: instruction.clone(),
+                path_specificity: matched_policy.score.path_specificity,
+                source_path: matched_policy.loaded.source_path.clone(),
+                package_manager: package_manager_preference(instruction),
+                generated_file_mode: generated_file_mode(instruction),
+            });
+        }
+
+        for check in &policy.required_checks {
+            if let Some(command) = test_command(check) {
+                test_command_candidates.push(TestCommandCandidate {
+                    source: source.clone(),
+                    command,
+                    scope: conflict_scope(&policy.applies_when.paths),
+                });
+            }
+        }
+    }
+
+    resolve_package_manager_conflicts(&instruction_candidates, &mut resolution);
+    warn_for_test_command_conflicts(&test_command_candidates, &mut resolution);
+    warn_for_generated_file_conflicts(&instruction_candidates, &mut resolution);
+    fail_on_safety_weakening(
+        matched,
+        &instruction_candidates,
+        &global_safety_texts,
+        &mut resolution,
+    )?;
+
+    Ok(resolution)
+}
+
+fn resolve_package_manager_conflicts(
+    candidates: &[InstructionConflictCandidate],
+    resolution: &mut ConflictResolution,
+) {
+    let package_candidates = candidates
+        .iter()
+        .filter(|candidate| candidate.package_manager.is_some())
+        .collect::<Vec<_>>();
+
+    for (index, left) in package_candidates.iter().enumerate() {
+        for right in package_candidates.iter().skip(index + 1) {
+            if left.package_manager == right.package_manager {
+                continue;
+            }
+
+            let (winner, loser) = if package_manager_winner(left, right) == std::cmp::Ordering::Less
+            {
+                (*left, *right)
+            } else {
+                (*right, *left)
+            };
+            if !resolution.omitted_instructions.insert(ConflictItemKey {
+                source: loser.source.0.clone(),
+                text: loser.text.clone(),
+            }) {
+                continue;
+            }
+
+            resolution.warnings.push(format!(
+                "Conflict resolved: package_manager winner `{}` over `{}` because the winning source is more path-specific.",
+                winner.source.0, loser.source.0
+            ));
+        }
+    }
+}
+
+fn package_manager_winner(
+    left: &InstructionConflictCandidate,
+    right: &InstructionConflictCandidate,
+) -> std::cmp::Ordering {
+    right
+        .path_specificity
+        .cmp(&left.path_specificity)
+        .then_with(|| left.source_path.cmp(&right.source_path))
+        .then_with(|| left.source.0.cmp(&right.source.0))
+}
+
+fn warn_for_test_command_conflicts(
+    candidates: &[TestCommandCandidate],
+    resolution: &mut ConflictResolution,
+) {
+    let mut seen = BTreeSet::new();
+
+    for (index, left) in candidates.iter().enumerate() {
+        for right in candidates.iter().skip(index + 1) {
+            if left.scope != right.scope || left.command == right.command {
+                continue;
+            }
+            if !seen.insert((
+                left.scope.clone(),
+                left.command.clone(),
+                right.command.clone(),
+            )) {
+                continue;
+            }
+
+            resolution.warnings.push(format!(
+                "Conflict warning: test_command scope `{}` has contradictory commands `{}` from `{}` and `{}` from `{}`.",
+                left.scope, left.command, left.source.0, right.command, right.source.0
+            ));
+        }
+    }
+}
+
+fn warn_for_generated_file_conflicts(
+    candidates: &[InstructionConflictCandidate],
+    resolution: &mut ConflictResolution,
+) {
+    let has_avoid = candidates
+        .iter()
+        .any(|candidate| candidate.generated_file_mode == GeneratedFileMode::AvoidDirectEdit);
+    let has_direct = candidates
+        .iter()
+        .any(|candidate| candidate.generated_file_mode == GeneratedFileMode::DirectEdit);
+    if has_avoid && has_direct {
+        resolution.warnings.push(
+            "Conflict warning: generated_file instructions both prohibit direct edits and ask for direct edits.".into(),
+        );
+    }
+}
+
+fn fail_on_safety_weakening(
+    matched: &[MatchedPolicy<'_>],
+    candidates: &[InstructionConflictCandidate],
+    global_safety_texts: &[(SourceRef, &str)],
+    resolution: &mut ConflictResolution,
+) -> Result<()> {
+    if global_safety_texts.is_empty() {
+        return Ok(());
+    }
+
+    for candidate in candidates {
+        let Some(matched_policy) = matched
+            .iter()
+            .find(|matched_policy| policy_source_ref(matched_policy.loaded) == candidate.source)
+        else {
+            continue;
+        };
+        if is_global_policy(&matched_policy.loaded.policy.applies_when) {
+            continue;
+        }
+        if !weakens_safety_rule(&candidate.text) {
+            continue;
+        }
+
+        for (safety_source, safety_text) in global_safety_texts {
+            if safety_topics_overlap(safety_text, &candidate.text) {
+                bail!(
+                    "policy_conflict: local instruction `{}` from `{}` explicitly weakens global safety rule from `{}`",
+                    candidate.text,
+                    candidate.source.0,
+                    safety_source.0
+                );
+            }
+        }
+
+        resolution.warnings.push(format!(
+            "Conflict warning: possible safety weakening in `{}` from `{}`; global safety controls remain mandatory.",
+            candidate.text, candidate.source.0
+        ));
+    }
+
+    Ok(())
 }
 
 fn match_policy<'a>(
@@ -831,6 +1069,182 @@ fn contains_glob_meta(pattern: &str) -> bool {
     pattern
         .chars()
         .any(|character| matches!(character, '*' | '?' | '[' | ']' | '{' | '}' | ','))
+}
+
+fn package_manager_preference(text: &str) -> Option<&'static str> {
+    let normalized = normalized_conflict_text(text);
+    let mut found = Vec::new();
+    for package_manager in ["npm", "pnpm", "yarn"] {
+        if normalized
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .any(|word| word == package_manager)
+        {
+            found.push(package_manager);
+        }
+    }
+
+    if found.len() == 1 {
+        Some(found[0])
+    } else {
+        None
+    }
+}
+
+fn test_command(text: &str) -> Option<String> {
+    let normalized = normalized_conflict_text(text);
+    let words = normalized
+        .split_whitespace()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if words.is_empty() || !words.iter().any(|word| word.contains("test")) {
+        return None;
+    }
+
+    if matches!(
+        words.first().map(String::as_str),
+        Some("npm" | "pnpm" | "yarn" | "cargo" | "pytest")
+    ) {
+        return Some(words.join(" "));
+    }
+    if words.first().map(String::as_str) == Some("run")
+        && matches!(
+            words.get(1).map(String::as_str),
+            Some("npm" | "pnpm" | "yarn" | "cargo" | "pytest")
+        )
+    {
+        return Some(words[1..].join(" "));
+    }
+
+    None
+}
+
+fn conflict_scope(paths: &[String]) -> String {
+    if paths.is_empty() {
+        ".".into()
+    } else {
+        paths
+            .iter()
+            .map(|path| normalize_policy_path(path))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+fn generated_file_mode(text: &str) -> GeneratedFileMode {
+    let normalized = normalized_conflict_text(text);
+    if !normalized.contains("generated") {
+        return GeneratedFileMode::None;
+    }
+    let prohibits_direct_edit = contains_any(
+        &normalized,
+        &[
+            "do not edit",
+            "don't edit",
+            "never edit",
+            "avoid direct edit",
+            "avoid editing",
+            "must not edit",
+            "should not edit",
+        ],
+    );
+    let asks_direct_edit = contains_any(
+        &normalized,
+        &[
+            "edit generated",
+            "modify generated",
+            "change generated",
+            "directly edit",
+            "edit the generated",
+            "modify the generated",
+        ],
+    ) && !prohibits_direct_edit;
+
+    if prohibits_direct_edit {
+        GeneratedFileMode::AvoidDirectEdit
+    } else if asks_direct_edit {
+        GeneratedFileMode::DirectEdit
+    } else {
+        GeneratedFileMode::None
+    }
+}
+
+fn is_safety_rule(text: &str) -> bool {
+    let normalized = normalized_conflict_text(text);
+    (contains_any(
+        &normalized,
+        &[
+            "do not",
+            "don't",
+            "never",
+            "must not",
+            "should not",
+            "blocked",
+            "avoid",
+        ],
+    ) || contains_any(&normalized, &["safety", "safe"]))
+        && contains_any(&normalized, safety_keywords())
+}
+
+fn weakens_safety_rule(text: &str) -> bool {
+    let normalized = normalized_conflict_text(text);
+    contains_any(
+        &normalized,
+        &[
+            "ignore safety",
+            "bypass safety",
+            "disable safety",
+            "weaken safety",
+            "skip safety",
+            "you may",
+            "allowed to",
+            "allow ",
+            "okay to",
+            "ok to",
+            "can ignore",
+            "can bypass",
+        ],
+    ) && contains_any(&normalized, safety_keywords())
+}
+
+fn safety_topics_overlap(left: &str, right: &str) -> bool {
+    let left = normalized_conflict_text(left);
+    let right = normalized_conflict_text(right);
+    safety_keywords()
+        .iter()
+        .any(|keyword| left.contains(keyword) && right.contains(keyword))
+}
+
+fn safety_keywords() -> &'static [&'static str] {
+    &[
+        "credential",
+        "credentials",
+        "secret",
+        "secrets",
+        "token",
+        "tokens",
+        "destructive",
+        "delete",
+        "rm -rf",
+        "production",
+        "database",
+        "migration",
+        "migrations",
+        "safety",
+        "safe",
+    ]
+}
+
+fn contains_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
+}
+
+fn normalized_conflict_text(text: &str) -> String {
+    text.to_ascii_lowercase()
+        .replace('`', " ")
+        .replace(['\n', '\r', '\t'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn first_intersection<'a>(left: &'a [String], right: &[String]) -> Option<&'a str> {
@@ -2001,6 +2415,155 @@ No task summary provided.
     }
 
     #[test]
+    fn conflict_fixture_reports_expected_package_manager_warning() {
+        let policies = conflict_fixture_policies();
+        let bundle = build_instruction_bundle(
+            &test_intent(vec!["frontend/src/App.tsx"]),
+            &policies,
+            default_build_options(),
+        )
+        .expect("bundle should build");
+
+        assert!(bundle
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("package_manager")));
+        assert!(bundle
+            .instructions
+            .iter()
+            .any(|instruction| instruction.text == "Use pnpm for frontend package commands."));
+        assert!(!bundle
+            .instructions
+            .iter()
+            .any(|instruction| instruction.text == "Use npm for package commands."));
+    }
+
+    #[test]
+    fn nested_path_specific_package_manager_overrides_root_package_manager() {
+        let policies = vec![
+            test_policy(
+                "root.package",
+                AppliesWhen::default(),
+                "Use yarn for package commands.",
+            ),
+            test_policy(
+                "web.package",
+                AppliesWhen {
+                    paths: vec!["packages/web/**".into()],
+                    ..AppliesWhen::default()
+                },
+                "Use npm for package commands in packages/web.",
+            ),
+        ];
+
+        let bundle = build_instruction_bundle(
+            &test_intent(vec!["packages/web/src/App.tsx"]),
+            &policies,
+            default_build_options(),
+        )
+        .expect("bundle should build");
+
+        assert_eq!(
+            bundle
+                .instructions
+                .iter()
+                .map(|instruction| instruction.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Use npm for package commands in packages/web."]
+        );
+        assert_eq!(bundle.context_budget.candidate_policies_omitted, Some(0));
+    }
+
+    #[test]
+    fn contradictory_test_commands_for_same_scope_warn() {
+        let mut npm = test_policy(
+            "tests.npm",
+            AppliesWhen {
+                paths: vec!["src/payments/**".into()],
+                ..AppliesWhen::default()
+            },
+            "Keep payment tests focused.",
+        );
+        npm.policy.required_checks = vec!["npm test -- src/payments".into()];
+        let mut pnpm = test_policy(
+            "tests.pnpm",
+            AppliesWhen {
+                paths: vec!["src/payments/**".into()],
+                ..AppliesWhen::default()
+            },
+            "Run payment regression tests.",
+        );
+        pnpm.policy.required_checks = vec!["pnpm test -- src/payments".into()];
+
+        let bundle = build_instruction_bundle(
+            &test_intent(vec!["src/payments/refunds.ts"]),
+            &[npm, pnpm],
+            default_build_options(),
+        )
+        .expect("bundle should build");
+
+        assert!(bundle
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("test_command")));
+    }
+
+    #[test]
+    fn generated_file_direct_edit_conflict_warns() {
+        let policies = vec![
+            test_policy(
+                "generated.avoid",
+                AppliesWhen::default(),
+                "Do not edit generated files directly; update the generator.",
+            ),
+            test_policy(
+                "generated.edit",
+                AppliesWhen::default(),
+                "Edit generated files directly for this task.",
+            ),
+        ];
+
+        let bundle = build_instruction_bundle(
+            &test_intent(vec!["src/generated/client.ts"]),
+            &policies,
+            default_build_options(),
+        )
+        .expect("bundle should build");
+
+        assert!(bundle
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("generated_file")));
+    }
+
+    #[test]
+    fn local_instruction_cannot_weaken_global_safety_rule() {
+        let mut global = test_policy(
+            "global.safety",
+            AppliesWhen::default(),
+            "Do not commit secrets.",
+        );
+        global.policy.priority = Some(90);
+        let local = test_policy(
+            "local.unsafe",
+            AppliesWhen {
+                paths: vec!["fixtures/**".into()],
+                ..AppliesWhen::default()
+            },
+            "You may commit secrets in fixtures.",
+        );
+
+        let error = build_instruction_bundle(
+            &test_intent(vec!["fixtures/example.env"]),
+            &[global, local],
+            default_build_options(),
+        )
+        .expect_err("explicit safety weakening should fail closed");
+
+        assert!(error.to_string().contains("policy_conflict"));
+    }
+
+    #[test]
     fn renders_bundle_markdown_snapshot() {
         let bundle: InstructionBundle = serde_json::from_str(SAMPLE_BUNDLE_JSON).unwrap();
         let markdown = render_bundle_markdown(&bundle);
@@ -2012,6 +2575,24 @@ No task summary provided.
 
     fn fixture_simple_repo() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/simple-repo")
+    }
+
+    fn conflict_fixture_policies() -> Vec<LoadedPolicy> {
+        vec![
+            test_policy(
+                "fixture.root.package",
+                AppliesWhen::default(),
+                "Use npm for package commands.",
+            ),
+            test_policy(
+                "fixture.frontend.package",
+                AppliesWhen {
+                    paths: vec!["frontend/**".into()],
+                    ..AppliesWhen::default()
+                },
+                "Use pnpm for frontend package commands.",
+            ),
+        ]
     }
 
     fn test_policy(id: &str, applies_when: AppliesWhen, instruction: &str) -> LoadedPolicy {
