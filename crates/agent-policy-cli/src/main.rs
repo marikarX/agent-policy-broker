@@ -1,5 +1,6 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::collections::BTreeMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -252,17 +253,22 @@ fn run_inspect(global: &GlobalArgs) -> anyhow::Result<()> {
 }
 
 fn run_migrate(global: &GlobalArgs, args: MigrateArgs) -> anyhow::Result<()> {
-    if args.write {
-        anyhow::bail!("`agent-policy migrate --write` is not implemented yet; use `--dry-run`");
+    if args.dry_run && args.write {
+        anyhow::bail!("migrate accepts either `--dry-run` or `--write`, not both");
     }
-    if !args.dry_run {
-        anyhow::bail!("migrate currently supports dry-run only; pass `--dry-run`");
+    if !args.dry_run && !args.write {
+        anyhow::bail!("migrate requires either `--dry-run` or `--write`");
     }
 
     let repo = global.repo.as_deref().unwrap_or_else(|| Path::new("."));
     let discovered = discover(repo)?;
     let inspection = inspect_repo(repo, discovered);
-    let report = migration_dry_run_report(&inspection);
+    let mut report = migration_dry_run_report(&inspection);
+
+    if args.write {
+        write_migration_drafts(repo, &report.drafts)?;
+        report.mode = "write";
+    }
 
     match global.format.clone().unwrap_or(OutputFormat::Markdown) {
         OutputFormat::Json => {
@@ -271,6 +277,37 @@ fn run_migrate(global: &GlobalArgs, args: MigrateArgs) -> anyhow::Result<()> {
         OutputFormat::Markdown => {
             print!("{}", render_migration_dry_run_markdown(&report));
         }
+    }
+
+    Ok(())
+}
+
+fn write_migration_drafts(repo: &Path, drafts: &[PolicyDraft]) -> anyhow::Result<()> {
+    let migration_dir = repo.join(".agent-policy").join("migration");
+    fs::create_dir_all(&migration_dir)?;
+
+    for draft in drafts {
+        let relative_target = Path::new(&draft.target_path);
+        if relative_target.is_absolute()
+            || relative_target.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir | std::path::Component::RootDir
+                )
+            })
+            || !relative_target.starts_with(".agent-policy/migration")
+        {
+            anyhow::bail!("refusing to write migration draft outside .agent-policy/migration");
+        }
+
+        let target = repo.join(relative_target);
+        let parent = target
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("migration draft path has no parent"))?;
+        if parent != migration_dir {
+            anyhow::bail!("refusing to write nested migration draft path");
+        }
+        fs::write(target, &draft.policy_yaml)?;
     }
 
     Ok(())
@@ -1434,9 +1471,13 @@ fn render_inspection_markdown(report: &InspectionReport) -> String {
 
 fn render_migration_dry_run_markdown(report: &MigrationDryRunReport) -> String {
     let mut out = String::new();
-    out.push_str("# Agent Policy Migration Dry Run\n\n");
+    if report.mode == "write" {
+        out.push_str("# Agent Policy Migration Write\n\n");
+    } else {
+        out.push_str("# Agent Policy Migration Dry Run\n\n");
+    }
     out.push_str(&format!("- Repository: `{}`\n", report.repo));
-    out.push_str("- Mode: `dry_run`\n");
+    out.push_str(&format!("- Mode: `{}`\n", report.mode));
     out.push_str(&format!(
         "- Proposed drafts: {}; sources: {}; candidate instructions: {}.\n\n",
         report.summary.draft_count,
@@ -2115,8 +2156,10 @@ mod tests {
     };
     use agent_policy_discover::discover;
     use clap::{error::ErrorKind, CommandFactory, Parser};
+    use std::collections::BTreeMap;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn clap_command_builds() {
@@ -2409,19 +2452,61 @@ mod tests {
     }
 
     #[test]
-    fn migrate_write_is_rejected_until_write_mode_exists() {
-        let repo = fixture_repo("nested-instructions");
+    fn migrate_write_creates_draft_policy_files_without_touching_instruction_files() {
+        let temp = TempRepo::copy_fixture("nested-instructions");
+        let repo = temp.path();
+        fs::write(
+            repo.join("CLAUDE.md"),
+            "# Claude Instructions\n\n- Keep Claude-specific guidance intact.\n",
+        )
+        .expect("write temp claude file");
+        let repo_files_before = repo_file_contents(repo);
+        let instruction_files_before = instruction_file_contents(repo);
+
         let cli = Cli::try_parse_from([
             "agent-policy",
             "--repo",
             repo.to_str().expect("utf8 repo"),
             "migrate",
             "--write",
+            "--format",
+            "json",
         ])
         .expect("parse migrate write");
+        run(cli).expect("run write migration");
 
-        let error = run(cli).expect_err("write mode should fail");
-        assert!(error.to_string().contains("--write"));
+        assert_eq!(instruction_file_contents(repo), instruction_files_before);
+        assert_only_migration_files_were_added(&repo_files_before, &repo_file_contents(repo));
+
+        let migration_dir = repo.join(".agent-policy").join("migration");
+        assert!(migration_dir.is_dir());
+
+        let payment_policy_path = migration_dir.join("local.backend.payments.payments.yaml");
+        let payment_policy =
+            fs::read_to_string(&payment_policy_path).expect("read written payment policy");
+        assert_eq!(payment_policy, PAYMENT_POLICY_DRY_RUN_YAML_SNAPSHOT);
+        assert!(payment_policy.contains("status: draft"));
+        assert!(payment_policy.contains("generated_from:"));
+        assert!(payment_policy.contains("path: \"backend/payments/AGENTS.md\""));
+
+        let first_written = written_migration_file_contents(&migration_dir);
+        let cli = Cli::try_parse_from([
+            "agent-policy",
+            "--repo",
+            repo.to_str().expect("utf8 repo"),
+            "migrate",
+            "--write",
+            "--format",
+            "json",
+        ])
+        .expect("parse second migrate write");
+        run(cli).expect("run second write migration");
+        assert_eq!(
+            written_migration_file_contents(&migration_dir),
+            first_written
+        );
+        assert_eq!(instruction_file_contents(repo), instruction_files_before);
+        assert_only_migration_files_were_added(&repo_files_before, &repo_file_contents(repo));
     }
 
     #[test]
@@ -2619,6 +2704,148 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures")
             .join(name)
+    }
+
+    struct TempRepo {
+        path: PathBuf,
+    }
+
+    impl TempRepo {
+        fn copy_fixture(name: &str) -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "agent-policy-cli-{name}-{}-{nonce}",
+                std::process::id()
+            ));
+            copy_dir_all(&fixture_repo(name), &path).expect("copy fixture to temp repo");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempRepo {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn copy_dir_all(source: &Path, destination: &Path) -> std::io::Result<()> {
+        fs::create_dir_all(destination)?;
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let target = destination.join(entry.file_name());
+            if file_type.is_dir() {
+                copy_dir_all(&entry.path(), &target)?;
+            } else if file_type.is_file() {
+                fs::copy(entry.path(), target)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn instruction_file_contents(repo: &Path) -> BTreeMap<String, String> {
+        let mut contents = BTreeMap::new();
+        collect_instruction_file_contents(repo, repo, &mut contents);
+        contents
+    }
+
+    fn repo_file_contents(repo: &Path) -> BTreeMap<String, String> {
+        let mut contents = BTreeMap::new();
+        collect_repo_file_contents(repo, repo, &mut contents);
+        contents
+    }
+
+    fn collect_repo_file_contents(
+        repo: &Path,
+        directory: &Path,
+        contents: &mut BTreeMap<String, String>,
+    ) {
+        for entry in fs::read_dir(directory).expect("read directory") {
+            let entry = entry.expect("read directory entry");
+            let path = entry.path();
+            let file_type = entry.file_type().expect("entry file type");
+            if file_type.is_dir() {
+                collect_repo_file_contents(repo, &path, contents);
+            } else if file_type.is_file() {
+                let relative = path
+                    .strip_prefix(repo)
+                    .expect("repo-relative file path")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                contents.insert(relative, fs::read_to_string(&path).expect("read repo file"));
+            }
+        }
+    }
+
+    fn assert_only_migration_files_were_added(
+        before: &BTreeMap<String, String>,
+        after: &BTreeMap<String, String>,
+    ) {
+        for (path, contents) in before {
+            assert_eq!(
+                after.get(path),
+                Some(contents),
+                "pre-existing file changed: {path}"
+            );
+        }
+        for path in after.keys() {
+            assert!(
+                before.contains_key(path) || path.starts_with(".agent-policy/migration/"),
+                "unexpected generated path: {path}"
+            );
+        }
+    }
+
+    fn collect_instruction_file_contents(
+        repo: &Path,
+        directory: &Path,
+        contents: &mut BTreeMap<String, String>,
+    ) {
+        for entry in fs::read_dir(directory).expect("read directory") {
+            let entry = entry.expect("read directory entry");
+            let path = entry.path();
+            let file_type = entry.file_type().expect("entry file type");
+            if file_type.is_dir() {
+                collect_instruction_file_contents(repo, &path, contents);
+            } else if file_type.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| matches!(name, "AGENTS.md" | "CLAUDE.md"))
+            {
+                let relative = path
+                    .strip_prefix(repo)
+                    .expect("repo-relative instruction path")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                contents.insert(
+                    relative,
+                    fs::read_to_string(&path).expect("read instruction file"),
+                );
+            }
+        }
+    }
+
+    fn written_migration_file_contents(migration_dir: &Path) -> BTreeMap<String, String> {
+        let mut contents = BTreeMap::new();
+        for entry in fs::read_dir(migration_dir).expect("read migration dir") {
+            let entry = entry.expect("read migration entry");
+            let path = entry.path();
+            if entry.file_type().expect("migration file type").is_file() {
+                contents.insert(
+                    entry.file_name().to_string_lossy().into_owned(),
+                    fs::read_to_string(path).expect("read migration file"),
+                );
+            }
+        }
+        contents
     }
 
     const PAYMENT_POLICY_DRY_RUN_YAML_SNAPSHOT: &str = r#"id: local.backend.payments.payments
