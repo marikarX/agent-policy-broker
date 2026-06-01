@@ -662,6 +662,57 @@ instructions:
     }
 
     #[test]
+    fn registry_fulltext_index_does_not_walk_source_root_for_docs() {
+        let temp = TempDir::new("registry-fulltext-boundary");
+        let repo = temp.path().join("repo");
+        let registry_dir = temp.path().join("registry-cache");
+        fs::create_dir_all(&repo).expect("create temp repo");
+        init_git_registry_with_policy(
+            &registry_dir,
+            "id: org.registry.safe\nversion: 1\nstatus: active\napplies_when: {}\ninstructions:\n  - Registry policy guidance stays searchable.\n",
+        );
+        fs::create_dir_all(registry_dir.join(".ssh")).expect("create sensitive dir");
+        fs::write(
+            registry_dir.join(".ssh").join("id_rsa"),
+            "APB_REGISTRY_FULLTEXT_SECRET_DO_NOT_INDEX",
+        )
+        .expect("write sensitive file");
+        fs::write(
+            registry_dir.join("AGENTS.md"),
+            "Registry-root markdown instructions should not be discovered during indexing.",
+        )
+        .expect("write registry-root instruction file");
+        let mut registry = test_registry(&registry_dir, "main", SyncMode::Manual);
+        registry.url = registry_dir.display().to_string();
+        let config = AgentPolicyConfig {
+            registry: Some(registry),
+            index: agent_policy_config::IndexConfig {
+                include: vec![".ssh/id_rsa".to_string(), "AGENTS.md".to_string()],
+                exclude: Vec::new(),
+                vector: agent_policy_config::VectorIndexConfig::default(),
+            },
+            ..AgentPolicyConfig::default()
+        };
+        let cache_dir = temp.path().join("cache");
+
+        let report = build_metadata_index_with_cache_dir(&repo, &config, &cache_dir)
+            .expect("build registry index");
+
+        assert_eq!(report.fulltext_document_count, 1);
+        let mut warnings = Vec::new();
+        let leaked_candidates = search_fulltext_candidates(
+            &cache_dir,
+            &report.source,
+            "APB_REGISTRY_FULLTEXT_SECRET_DO_NOT_INDEX discovered",
+            8,
+            &mut warnings,
+        )
+        .expect("search registry fulltext index");
+        assert!(warnings.is_empty());
+        assert!(leaked_candidates.is_empty());
+    }
+
+    #[test]
     fn bm25_candidates_do_not_override_exact_metadata_or_policy_priority() {
         let temp = TempDir::new("bm25-priority");
         let repo = temp.path().join("repo");
