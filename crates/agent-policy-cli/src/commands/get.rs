@@ -5,8 +5,8 @@ use agent_policy_config::{load_config, load_config_from_path, RegistryConfig};
 use agent_policy_core::{
     build_instruction_bundle_with_bm25_candidates, load_policies_from_dirs,
     load_policies_from_registry, render_bundle_json, render_bundle_markdown, AppliesWhen,
-    BundleBuildOptions, DetectedContext, LoadedPolicy, OutputBudget, Policy, PolicyStatus,
-    PolicyVersion, RegistryLoadOptions, SourceRef, TaskDetails, TaskIntent, TaskType,
+    BundleBuildOptions, DetectedContext, InstructionBundle, LoadedPolicy, OutputBudget, Policy,
+    PolicyStatus, PolicyVersion, RegistryLoadOptions, SourceRef, TaskDetails, TaskIntent, TaskType,
 };
 use agent_policy_discover::{
     discover, DiscoveryResult, InstructionSourceType, MarkdownInstructionCandidateType,
@@ -26,6 +26,24 @@ pub(crate) struct GetPolicyLoad {
 }
 
 pub(crate) fn run(global: &GlobalArgs, args: GetArgs) -> anyhow::Result<()> {
+    let bundle = build_instruction_bundle_for_get(global, &args)?;
+
+    match global.format.clone().unwrap_or(OutputFormat::Json) {
+        OutputFormat::Json => {
+            println!("{}", render_bundle_json(&bundle)?);
+        }
+        OutputFormat::Markdown => {
+            print!("{}", render_bundle_markdown(&bundle));
+        }
+    }
+
+    Ok(())
+}
+
+pub(crate) fn build_instruction_bundle_for_get(
+    global: &GlobalArgs,
+    args: &GetArgs,
+) -> anyhow::Result<InstructionBundle> {
     let repo = global
         .repo
         .as_deref()
@@ -60,17 +78,7 @@ pub(crate) fn run(global: &GlobalArgs, args: GetArgs) -> anyhow::Result<()> {
         &bm25_candidate_ids,
     )?;
     bundle.warnings.extend(warnings);
-
-    match global.format.clone().unwrap_or(OutputFormat::Json) {
-        OutputFormat::Json => {
-            println!("{}", render_bundle_json(&bundle)?);
-        }
-        OutputFormat::Markdown => {
-            print!("{}", render_bundle_markdown(&bundle));
-        }
-    }
-
-    Ok(())
+    Ok(bundle)
 }
 
 fn bm25_candidate_policy_ids(

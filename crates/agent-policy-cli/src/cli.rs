@@ -1,7 +1,7 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
-use crate::commands::{discover, get, index, inspect, migrate, registry, validate};
+use crate::commands::{discover, get, index, inspect, migrate, registry, serve, validate};
 
 #[derive(Debug, Parser)]
 #[command(name = "agent-policy", version, about = "Agent Policy Broker CLI")]
@@ -18,7 +18,7 @@ pub(crate) enum OutputFormat {
     Markdown,
 }
 
-#[derive(Debug, Args)]
+#[derive(Clone, Debug, Args)]
 pub(crate) struct GlobalArgs {
     #[arg(long, global = true, value_name = "path")]
     pub(crate) repo: Option<PathBuf>,
@@ -51,7 +51,7 @@ pub(crate) enum Commands {
     /// Manage policy registries.
     Registry(RegistryArgs),
     /// Run a local service for repeated lookups and integrations.
-    Serve,
+    Serve(ServeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -60,7 +60,7 @@ pub(crate) struct RegistryArgs {
     pub(crate) command: RegistryCommands,
 }
 
-#[derive(Debug, Args)]
+#[derive(Clone, Debug, Args)]
 pub(crate) struct GetArgs {
     #[arg(long, value_name = "text")]
     pub(crate) task: Option<String>,
@@ -84,6 +84,14 @@ pub(crate) struct MigrateArgs {
     pub(crate) write: bool,
 }
 
+#[derive(Clone, Debug, Args)]
+pub(crate) struct ServeArgs {
+    #[arg(long, default_value = "127.0.0.1", value_name = "host")]
+    pub(crate) host: String,
+    #[arg(long, default_value_t = 8765, value_name = "port")]
+    pub(crate) port: u16,
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum RegistryCommands {
     /// Fetch or update a Git-backed policy registry.
@@ -98,17 +106,11 @@ pub(crate) fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Inspect => inspect::run(&cli.global),
         Commands::Migrate(args) => migrate::run(&cli.global, args),
         Commands::Index => index::run(&cli.global),
-        Commands::Serve => not_implemented("serve"),
+        Commands::Serve(args) => serve::run(&cli.global, args),
         Commands::Registry(registry) => match registry.command {
             RegistryCommands::Sync => registry::run_sync(&cli.global),
         },
     }
-}
-
-fn not_implemented(command_name: &str) -> anyhow::Result<()> {
-    anyhow::bail!(
-        "command `{command_name}` is not implemented yet. Use `agent-policy {command_name} --help` for usage details."
-    )
 }
 
 #[cfg(test)]
@@ -256,6 +258,19 @@ instructions:
             .expect("parse discover");
         assert!(matches!(cli.global.format, Some(OutputFormat::Json)));
         assert!(matches!(cli.command, Commands::Discover));
+    }
+
+    #[test]
+    fn parse_serve_defaults_to_localhost() {
+        let cli = Cli::try_parse_from(["agent-policy", "serve"]).expect("parse serve");
+
+        match cli.command {
+            Commands::Serve(args) => {
+                assert_eq!(args.host, "127.0.0.1");
+                assert_eq!(args.port, 8765);
+            }
+            _ => panic!("expected serve command"),
+        }
     }
 
     #[test]
