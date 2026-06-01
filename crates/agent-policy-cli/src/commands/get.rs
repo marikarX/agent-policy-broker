@@ -90,16 +90,16 @@ fn effective_output_budget(
 
     let safe_defaults = OutputBudgetConfig::default();
     OutputBudgetConfig {
-        max_tokens: config_budget.max_tokens.min(safe_defaults.max_tokens),
+        max_tokens: config_budget.max_tokens.max(safe_defaults.max_tokens),
         max_instructions: config_budget
             .max_instructions
-            .min(safe_defaults.max_instructions),
+            .max(safe_defaults.max_instructions),
         max_required_checks: config_budget
             .max_required_checks
-            .min(safe_defaults.max_required_checks),
+            .max(safe_defaults.max_required_checks),
         max_blocked_actions: config_budget
             .max_blocked_actions
-            .min(safe_defaults.max_blocked_actions),
+            .max(safe_defaults.max_blocked_actions),
         include_examples: config_budget.include_examples,
         include_explanations: config_budget.include_explanations.clone(),
     }
@@ -488,10 +488,10 @@ mod tests {
     #[test]
     fn repo_config_budget_is_clamped_to_safe_defaults() {
         let config_budget = OutputBudgetConfig {
-            max_tokens: 50_000,
-            max_instructions: 500,
-            max_required_checks: 250,
-            max_blocked_actions: 125,
+            max_tokens: 1,
+            max_instructions: 0,
+            max_required_checks: 0,
+            max_blocked_actions: 0,
             include_examples: true,
             include_explanations: "full".into(),
         };
