@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+globset.workspace = true
 tracing.workspace = true
 agent-policy-core = { path = "../agent-policy-core" }
 agent-policy-config = { path = "../agent-policy-config" }
