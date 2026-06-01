@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -10,8 +11,8 @@ use agent_policy_core::{
     PolicyVersion, SourceRef, TaskDetails, TaskIntent, TaskType,
 };
 use agent_policy_discover::{
-    discover, discover_json, DiscoveryResult, InstructionSourceType,
-    MarkdownInstructionCandidateType,
+    discover, discover_json, DiscoveryResult, InstructionSource, InstructionSourceType,
+    MarkdownInstructionCandidate, MarkdownInstructionCandidateType,
 };
 
 #[derive(Debug, Parser)]
@@ -109,13 +110,980 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Discover => run_discover(&cli.global),
         Commands::Get(args) => run_get(&cli.global, args),
         Commands::Validate => run_validate(&cli.global),
-        Commands::Inspect => not_implemented("inspect"),
+        Commands::Inspect => run_inspect(&cli.global),
         Commands::Migrate => not_implemented("migrate"),
         Commands::Index => not_implemented("index"),
         Commands::Serve => not_implemented("serve"),
         Commands::Registry(registry) => match registry.command {
             RegistryCommands::Sync => not_implemented("registry sync"),
         },
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InspectionReport {
+    repo: String,
+    summary: InspectionSummary,
+    instruction_sources: Vec<InspectionSource>,
+    candidate_instructions: Vec<InspectionCandidate>,
+    duplicates: Vec<InspectionDuplicate>,
+    conflicts: Vec<InspectionConflict>,
+    migration_candidates: Vec<MigrationCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InspectionSummary {
+    source_count: usize,
+    candidate_instruction_count: usize,
+    duplicate_count: usize,
+    conflict_count: usize,
+    migration_candidate_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InspectionSource {
+    path: String,
+    scope: String,
+    source_type: InstructionSourceType,
+    instruction_count: usize,
+    labels: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InspectionCandidate {
+    text: String,
+    source: String,
+    line: usize,
+    scope: String,
+    candidate_type: String,
+    topic: String,
+    migration_class: MigrationClass,
+    target_policy: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InspectionDuplicate {
+    instruction: String,
+    sources: Vec<String>,
+    suggestion: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InspectionConflict {
+    topic: String,
+    sources: Vec<String>,
+    summary: String,
+    suggestion: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MigrationCandidate {
+    target_policy: String,
+    source: String,
+    migration_class: MigrationClass,
+    instructions: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MigrationClass {
+    KeepLocal,
+    RepoPolicy,
+    SharedRegistryPolicy,
+}
+
+fn run_inspect(global: &GlobalArgs) -> anyhow::Result<()> {
+    let repo = global.repo.as_deref().unwrap_or_else(|| Path::new("."));
+    let discovered = discover(repo)?;
+    let report = inspect_repo(repo, discovered);
+
+    match global.format.clone().unwrap_or(OutputFormat::Markdown) {
+        OutputFormat::Json => {
+            println!("{}", render_inspection_json(&report));
+        }
+        OutputFormat::Markdown => {
+            print!("{}", render_inspection_markdown(&report));
+        }
+    }
+
+    Ok(())
+}
+
+fn inspect_repo(repo: &Path, discovered: DiscoveryResult) -> InspectionReport {
+    let repo_name = repo
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(".")
+        .to_string();
+    let candidate_instructions = inspection_candidates(&discovered);
+    let instruction_sources = discovered
+        .instruction_sources
+        .iter()
+        .map(|source| inspection_source(source))
+        .collect::<Vec<_>>();
+    let duplicates = detect_inspection_duplicates(&candidate_instructions);
+    let conflicts = detect_inspection_conflicts(&candidate_instructions);
+    let migration_candidates = classify_migration_candidates(&candidate_instructions);
+
+    InspectionReport {
+        repo: repo_name,
+        summary: InspectionSummary {
+            source_count: instruction_sources.len(),
+            candidate_instruction_count: candidate_instructions.len(),
+            duplicate_count: duplicates.len(),
+            conflict_count: conflicts.len(),
+            migration_candidate_count: migration_candidates.len(),
+        },
+        instruction_sources,
+        candidate_instructions,
+        duplicates,
+        conflicts,
+        migration_candidates,
+    }
+}
+
+fn inspection_source(source: &InstructionSource) -> InspectionSource {
+    let mut labels = Vec::new();
+    push_labels_from_path(&mut labels, &source.path);
+    for candidate in &source.candidates {
+        push_unique(&mut labels, candidate_topic(candidate).to_string());
+    }
+
+    InspectionSource {
+        path: source.path.clone(),
+        scope: source.scope.clone(),
+        source_type: source.source_type.clone(),
+        instruction_count: source.candidates.len(),
+        labels,
+    }
+}
+
+fn inspection_candidates(discovered: &DiscoveryResult) -> Vec<InspectionCandidate> {
+    discovered
+        .instruction_sources
+        .iter()
+        .flat_map(|source| {
+            source.candidates.iter().map(|candidate| {
+                let topic = candidate_topic(candidate).to_string();
+                let (migration_class, target_policy) =
+                    classify_candidate_migration(candidate, &topic);
+                InspectionCandidate {
+                    text: candidate.text.clone(),
+                    source: candidate.provenance.path.clone(),
+                    line: candidate.line,
+                    scope: candidate.provenance.scope.clone(),
+                    candidate_type: match candidate.candidate_type {
+                        MarkdownInstructionCandidateType::Instruction => "instruction",
+                        MarkdownInstructionCandidateType::RequiredCheck => "required_check",
+                    }
+                    .to_string(),
+                    topic,
+                    migration_class,
+                    target_policy,
+                }
+            })
+        })
+        .collect()
+}
+
+fn detect_inspection_duplicates(candidates: &[InspectionCandidate]) -> Vec<InspectionDuplicate> {
+    let mut by_instruction = BTreeMap::<String, Vec<&InspectionCandidate>>::new();
+    for candidate in candidates
+        .iter()
+        .filter(|candidate| candidate.candidate_type == "instruction")
+    {
+        by_instruction
+            .entry(candidate.text.clone())
+            .or_default()
+            .push(candidate);
+    }
+
+    by_instruction
+        .into_iter()
+        .filter_map(|(instruction, matches)| {
+            if matches.len() < 2 {
+                return None;
+            }
+            let sources = matches
+                .iter()
+                .map(|candidate| source_line_ref(candidate))
+                .collect::<Vec<_>>();
+            let suggestion = if matches
+                .iter()
+                .any(|candidate| candidate.migration_class == MigrationClass::SharedRegistryPolicy)
+            {
+                "Move repeated guidance to a shared registry policy.".to_string()
+            } else {
+                "Move repeated guidance to a repo policy or keep the narrowest scoped copy."
+                    .to_string()
+            };
+            Some(InspectionDuplicate {
+                instruction,
+                sources,
+                suggestion,
+            })
+        })
+        .collect()
+}
+
+fn detect_inspection_conflicts(candidates: &[InspectionCandidate]) -> Vec<InspectionConflict> {
+    let mut conflicts = Vec::new();
+    detect_package_manager_conflicts(candidates, &mut conflicts);
+    detect_generated_file_conflicts(candidates, &mut conflicts);
+    detect_secret_conflicts(candidates, &mut conflicts);
+    conflicts
+}
+
+fn detect_package_manager_conflicts(
+    candidates: &[InspectionCandidate],
+    conflicts: &mut Vec<InspectionConflict>,
+) {
+    let package_manager_candidates = candidates
+        .iter()
+        .filter_map(|candidate| {
+            package_manager_preference(&candidate.text).map(|pm| (pm, candidate))
+        })
+        .collect::<Vec<_>>();
+
+    for (index, (left_pm, left)) in package_manager_candidates.iter().enumerate() {
+        for (right_pm, right) in package_manager_candidates.iter().skip(index + 1) {
+            if left_pm == right_pm {
+                continue;
+            }
+            if conflicts.iter().any(|conflict| {
+                conflict.topic == "package_manager"
+                    && conflict.sources.contains(&source_line_ref(left))
+                    && conflict.sources.contains(&source_line_ref(right))
+            }) {
+                continue;
+            }
+            let winner = more_specific_candidate(left, right);
+            conflicts.push(InspectionConflict {
+                topic: "package_manager".to_string(),
+                sources: vec![source_line_ref(left), source_line_ref(right)],
+                summary: format!(
+                    "{} says {}; {} says {}.",
+                    left.source, left_pm, right.source, right_pm
+                ),
+                suggestion: format!(
+                    "Keep the `{}` guidance scoped to `{}` if this is an intentional override.",
+                    package_manager_preference(&winner.text).unwrap_or("package manager"),
+                    winner.scope
+                ),
+            });
+        }
+    }
+}
+
+fn detect_generated_file_conflicts(
+    candidates: &[InspectionCandidate],
+    conflicts: &mut Vec<InspectionConflict>,
+) {
+    let prohibits = candidates
+        .iter()
+        .filter(|candidate| generated_file_mode(&candidate.text) == Some("avoid_direct_edit"))
+        .collect::<Vec<_>>();
+    let allows = candidates
+        .iter()
+        .filter(|candidate| generated_file_mode(&candidate.text) == Some("direct_edit"))
+        .collect::<Vec<_>>();
+
+    for prohibit in &prohibits {
+        for allow in &allows {
+            conflicts.push(InspectionConflict {
+                topic: "generated_files".to_string(),
+                sources: vec![source_line_ref(prohibit), source_line_ref(allow)],
+                summary: "Generated-file guidance both prohibits and asks for direct edits."
+                    .to_string(),
+                suggestion:
+                    "Prefer updating the generator or source schema; scope any exception narrowly."
+                        .to_string(),
+            });
+        }
+    }
+}
+
+fn detect_secret_conflicts(
+    candidates: &[InspectionCandidate],
+    conflicts: &mut Vec<InspectionConflict>,
+) {
+    let prohibits = candidates
+        .iter()
+        .filter(|candidate| secret_mode(&candidate.text) == Some("protect"))
+        .collect::<Vec<_>>();
+    let allows = candidates
+        .iter()
+        .filter(|candidate| secret_mode(&candidate.text) == Some("allow"))
+        .collect::<Vec<_>>();
+
+    for prohibit in &prohibits {
+        for allow in &allows {
+            conflicts.push(InspectionConflict {
+                topic: "secrets".to_string(),
+                sources: vec![source_line_ref(prohibit), source_line_ref(allow)],
+                summary:
+                    "Secret-handling guidance both protects secrets and permits exposing them."
+                        .to_string(),
+                suggestion:
+                    "Keep the stricter safety rule and remove or rewrite the weaker guidance."
+                        .to_string(),
+            });
+        }
+    }
+}
+
+fn classify_migration_candidates(candidates: &[InspectionCandidate]) -> Vec<MigrationCandidate> {
+    let mut grouped = BTreeMap::<(String, String, String), Vec<String>>::new();
+    for candidate in candidates
+        .iter()
+        .filter(|candidate| candidate.candidate_type == "instruction")
+    {
+        if let Some(target_policy) = &candidate.target_policy {
+            grouped
+                .entry((
+                    target_policy.clone(),
+                    candidate.source.clone(),
+                    migration_class_name(&candidate.migration_class).to_string(),
+                ))
+                .or_default()
+                .push(candidate.text.clone());
+        }
+    }
+
+    grouped
+        .into_iter()
+        .map(
+            |((target_policy, source, migration_class), instructions)| MigrationCandidate {
+                target_policy,
+                source,
+                migration_class: migration_class_from_name(&migration_class),
+                instructions,
+            },
+        )
+        .collect()
+}
+
+fn classify_candidate_migration(
+    candidate: &MarkdownInstructionCandidate,
+    topic: &str,
+) -> (MigrationClass, Option<String>) {
+    if candidate.candidate_type == MarkdownInstructionCandidateType::RequiredCheck {
+        return (
+            if candidate.provenance.scope == "." {
+                MigrationClass::RepoPolicy
+            } else {
+                MigrationClass::KeepLocal
+            },
+            Some(target_policy_for_candidate(candidate, topic)),
+        );
+    }
+
+    let class = if matches!(topic, "generated_files" | "secrets" | "security") {
+        MigrationClass::SharedRegistryPolicy
+    } else if candidate.provenance.scope == "." {
+        MigrationClass::RepoPolicy
+    } else {
+        MigrationClass::KeepLocal
+    };
+    let target_policy = Some(target_policy_for_candidate(candidate, topic));
+    (class, target_policy)
+}
+
+fn target_policy_for_candidate(candidate: &MarkdownInstructionCandidate, topic: &str) -> String {
+    match topic {
+        "generated_files" => return "org.generated-files".to_string(),
+        "secrets" | "security" => return "org.security".to_string(),
+        _ => {}
+    }
+
+    if candidate.provenance.scope != "." {
+        let scope = normalize_scope_prefix(&candidate.provenance.scope).replace('/', ".");
+        if !scope.is_empty() {
+            return format!("local.{scope}.{topic}");
+        }
+    }
+
+    match topic {
+        "payments" => "domain.payments".to_string(),
+        "api_contracts" => "repo.api-contracts".to_string(),
+        "tests" | "required_check" => "repo.checks".to_string(),
+        "package_manager" => "repo.package-manager".to_string(),
+        _ => "repo.instructions".to_string(),
+    }
+}
+
+fn candidate_topic(candidate: &MarkdownInstructionCandidate) -> &'static str {
+    if candidate.candidate_type == MarkdownInstructionCandidateType::RequiredCheck {
+        return "required_check";
+    }
+
+    let text = normalized_conflict_text(&candidate.text);
+    if package_manager_preference(&candidate.text).is_some() {
+        "package_manager"
+    } else if text.contains("generated") {
+        "generated_files"
+    } else if text.contains("secret") || text.contains("credential") || text.contains("token") {
+        "secrets"
+    } else if text.contains("payment") || text.contains("refund") || text.contains("billing") {
+        "payments"
+    } else if text.contains("api") || text.contains("contract") {
+        "api_contracts"
+    } else if text.contains("test") || text.contains("check") || text.contains("validate") {
+        "tests"
+    } else if text.contains("accessible") || text.contains("react") {
+        "frontend"
+    } else if text.contains("policy broker") || text.contains("policy guidance") {
+        "policy_broker"
+    } else {
+        "general"
+    }
+}
+
+fn push_labels_from_path(labels: &mut Vec<String>, path: &str) {
+    let normalized = path.to_ascii_lowercase();
+    for (needle, label) in [
+        ("frontend", "frontend"),
+        ("backend", "backend"),
+        ("payments", "payments"),
+        ("react", "react"),
+        ("copilot", "copilot"),
+        ("cursor", "cursor"),
+    ] {
+        if normalized.contains(needle) {
+            push_unique(labels, label.to_string());
+        }
+    }
+}
+
+fn package_manager_preference(text: &str) -> Option<&'static str> {
+    let normalized = normalized_conflict_text(text);
+    let mut found = Vec::new();
+    for package_manager in ["npm", "pnpm", "yarn"] {
+        if normalized
+            .split_whitespace()
+            .any(|word| word == package_manager)
+        {
+            found.push(package_manager);
+        }
+    }
+    if found.len() == 1 {
+        Some(found[0])
+    } else {
+        None
+    }
+}
+
+fn generated_file_mode(text: &str) -> Option<&'static str> {
+    let normalized = normalized_conflict_text(text);
+    if !normalized.contains("generated") {
+        return None;
+    }
+    if normalized.contains("do not")
+        || normalized.contains("never")
+        || normalized.contains("avoid")
+        || normalized.contains("instead")
+    {
+        Some("avoid_direct_edit")
+    } else if normalized.contains("edit")
+        || normalized.contains("modify")
+        || normalized.contains("change")
+    {
+        Some("direct_edit")
+    } else {
+        None
+    }
+}
+
+fn secret_mode(text: &str) -> Option<&'static str> {
+    let normalized = normalized_conflict_text(text);
+    if !(normalized.contains("secret")
+        || normalized.contains("credential")
+        || normalized.contains("token"))
+    {
+        return None;
+    }
+    if normalized.contains("do not")
+        || normalized.contains("never")
+        || normalized.contains("avoid")
+        || normalized.contains("protect")
+    {
+        Some("protect")
+    } else if normalized.contains("may")
+        || normalized.contains("allow")
+        || normalized.contains("commit")
+        || normalized.contains("log")
+    {
+        Some("allow")
+    } else {
+        None
+    }
+}
+
+fn normalized_conflict_text(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn more_specific_candidate<'a>(
+    left: &'a InspectionCandidate,
+    right: &'a InspectionCandidate,
+) -> &'a InspectionCandidate {
+    if scope_depth(&left.scope) >= scope_depth(&right.scope) {
+        left
+    } else {
+        right
+    }
+}
+
+fn scope_depth(scope: &str) -> usize {
+    normalize_scope_prefix(scope)
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .count()
+}
+
+fn source_line_ref(candidate: &InspectionCandidate) -> String {
+    format!("{}:{}", candidate.source, candidate.line)
+}
+
+fn migration_class_name(class: &MigrationClass) -> &'static str {
+    match class {
+        MigrationClass::KeepLocal => "keep_local",
+        MigrationClass::RepoPolicy => "repo_policy",
+        MigrationClass::SharedRegistryPolicy => "shared_registry_policy",
+    }
+}
+
+fn migration_class_from_name(name: &str) -> MigrationClass {
+    match name {
+        "shared_registry_policy" => MigrationClass::SharedRegistryPolicy,
+        "repo_policy" => MigrationClass::RepoPolicy,
+        _ => MigrationClass::KeepLocal,
+    }
+}
+
+fn render_inspection_json(report: &InspectionReport) -> String {
+    let mut out = String::new();
+    out.push_str("{\n");
+    out.push_str(&format!("  \"repo\": \"{}\",\n", json_escape(&report.repo)));
+    out.push_str("  \"summary\": {\n");
+    out.push_str(&format!(
+        "    \"source_count\": {},\n",
+        report.summary.source_count
+    ));
+    out.push_str(&format!(
+        "    \"candidate_instruction_count\": {},\n",
+        report.summary.candidate_instruction_count
+    ));
+    out.push_str(&format!(
+        "    \"duplicate_count\": {},\n",
+        report.summary.duplicate_count
+    ));
+    out.push_str(&format!(
+        "    \"conflict_count\": {},\n",
+        report.summary.conflict_count
+    ));
+    out.push_str(&format!(
+        "    \"migration_candidate_count\": {}\n",
+        report.summary.migration_candidate_count
+    ));
+    out.push_str("  },\n");
+
+    out.push_str("  \"instruction_sources\": ");
+    render_inspection_sources_json(&mut out, &report.instruction_sources, 2);
+    out.push_str(",\n  \"candidate_instructions\": ");
+    render_inspection_candidates_json(&mut out, &report.candidate_instructions, 2);
+    out.push_str(",\n  \"duplicates\": ");
+    render_inspection_duplicates_json(&mut out, &report.duplicates, 2);
+    out.push_str(",\n  \"conflicts\": ");
+    render_inspection_conflicts_json(&mut out, &report.conflicts, 2);
+    out.push_str(",\n  \"migration_candidates\": ");
+    render_migration_candidates_json(&mut out, &report.migration_candidates, 2);
+    out.push_str("\n}");
+    out
+}
+
+fn render_inspection_sources_json(out: &mut String, sources: &[InspectionSource], indent: usize) {
+    let pad = " ".repeat(indent);
+    let item_pad = " ".repeat(indent + 2);
+    out.push_str("[\n");
+    for (index, source) in sources.iter().enumerate() {
+        out.push_str(&item_pad);
+        out.push_str("{\n");
+        out.push_str(&format!(
+            "{}  \"path\": \"{}\",\n",
+            item_pad,
+            json_escape(&source.path)
+        ));
+        out.push_str(&format!(
+            "{}  \"scope\": \"{}\",\n",
+            item_pad,
+            json_escape(&source.scope)
+        ));
+        out.push_str(&format!(
+            "{}  \"type\": \"{}\",\n",
+            item_pad,
+            instruction_source_type_name(&source.source_type)
+        ));
+        out.push_str(&format!(
+            "{}  \"instruction_count\": {},\n",
+            item_pad, source.instruction_count
+        ));
+        out.push_str(&format!("{}  \"labels\": ", item_pad));
+        render_string_array_json(out, &source.labels, indent + 4);
+        out.push('\n');
+        out.push_str(&item_pad);
+        out.push('}');
+        if index + 1 != sources.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push_str(&pad);
+    out.push(']');
+}
+
+fn render_inspection_candidates_json(
+    out: &mut String,
+    candidates: &[InspectionCandidate],
+    indent: usize,
+) {
+    let pad = " ".repeat(indent);
+    let item_pad = " ".repeat(indent + 2);
+    out.push_str("[\n");
+    for (index, candidate) in candidates.iter().enumerate() {
+        out.push_str(&item_pad);
+        out.push_str("{\n");
+        out.push_str(&format!(
+            "{}  \"text\": \"{}\",\n",
+            item_pad,
+            json_escape(&candidate.text)
+        ));
+        out.push_str(&format!(
+            "{}  \"source\": \"{}\",\n",
+            item_pad,
+            json_escape(&candidate.source)
+        ));
+        out.push_str(&format!("{}  \"line\": {},\n", item_pad, candidate.line));
+        out.push_str(&format!(
+            "{}  \"scope\": \"{}\",\n",
+            item_pad,
+            json_escape(&candidate.scope)
+        ));
+        out.push_str(&format!(
+            "{}  \"candidate_type\": \"{}\",\n",
+            item_pad,
+            json_escape(&candidate.candidate_type)
+        ));
+        out.push_str(&format!(
+            "{}  \"topic\": \"{}\",\n",
+            item_pad,
+            json_escape(&candidate.topic)
+        ));
+        out.push_str(&format!(
+            "{}  \"migration_class\": \"{}\"",
+            item_pad,
+            migration_class_name(&candidate.migration_class)
+        ));
+        if let Some(target_policy) = &candidate.target_policy {
+            out.push_str(&format!(
+                ",\n{}  \"target_policy\": \"{}\"",
+                item_pad,
+                json_escape(target_policy)
+            ));
+        }
+        out.push('\n');
+        out.push_str(&item_pad);
+        out.push('}');
+        if index + 1 != candidates.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push_str(&pad);
+    out.push(']');
+}
+
+fn render_inspection_duplicates_json(
+    out: &mut String,
+    duplicates: &[InspectionDuplicate],
+    indent: usize,
+) {
+    let pad = " ".repeat(indent);
+    let item_pad = " ".repeat(indent + 2);
+    out.push_str("[\n");
+    for (index, duplicate) in duplicates.iter().enumerate() {
+        out.push_str(&item_pad);
+        out.push_str("{\n");
+        out.push_str(&format!(
+            "{}  \"instruction\": \"{}\",\n",
+            item_pad,
+            json_escape(&duplicate.instruction)
+        ));
+        out.push_str(&format!("{}  \"sources\": ", item_pad));
+        render_string_array_json(out, &duplicate.sources, indent + 4);
+        out.push_str(",\n");
+        out.push_str(&format!(
+            "{}  \"suggestion\": \"{}\"\n",
+            item_pad,
+            json_escape(&duplicate.suggestion)
+        ));
+        out.push_str(&item_pad);
+        out.push('}');
+        if index + 1 != duplicates.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push_str(&pad);
+    out.push(']');
+}
+
+fn render_inspection_conflicts_json(
+    out: &mut String,
+    conflicts: &[InspectionConflict],
+    indent: usize,
+) {
+    let pad = " ".repeat(indent);
+    let item_pad = " ".repeat(indent + 2);
+    out.push_str("[\n");
+    for (index, conflict) in conflicts.iter().enumerate() {
+        out.push_str(&item_pad);
+        out.push_str("{\n");
+        out.push_str(&format!(
+            "{}  \"topic\": \"{}\",\n",
+            item_pad,
+            json_escape(&conflict.topic)
+        ));
+        out.push_str(&format!("{}  \"sources\": ", item_pad));
+        render_string_array_json(out, &conflict.sources, indent + 4);
+        out.push_str(",\n");
+        out.push_str(&format!(
+            "{}  \"summary\": \"{}\",\n",
+            item_pad,
+            json_escape(&conflict.summary)
+        ));
+        out.push_str(&format!(
+            "{}  \"suggestion\": \"{}\"\n",
+            item_pad,
+            json_escape(&conflict.suggestion)
+        ));
+        out.push_str(&item_pad);
+        out.push('}');
+        if index + 1 != conflicts.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push_str(&pad);
+    out.push(']');
+}
+
+fn render_migration_candidates_json(
+    out: &mut String,
+    candidates: &[MigrationCandidate],
+    indent: usize,
+) {
+    let pad = " ".repeat(indent);
+    let item_pad = " ".repeat(indent + 2);
+    out.push_str("[\n");
+    for (index, candidate) in candidates.iter().enumerate() {
+        out.push_str(&item_pad);
+        out.push_str("{\n");
+        out.push_str(&format!(
+            "{}  \"target_policy\": \"{}\",\n",
+            item_pad,
+            json_escape(&candidate.target_policy)
+        ));
+        out.push_str(&format!(
+            "{}  \"source\": \"{}\",\n",
+            item_pad,
+            json_escape(&candidate.source)
+        ));
+        out.push_str(&format!(
+            "{}  \"migration_class\": \"{}\",\n",
+            item_pad,
+            migration_class_name(&candidate.migration_class)
+        ));
+        out.push_str(&format!("{}  \"instructions\": ", item_pad));
+        render_string_array_json(out, &candidate.instructions, indent + 4);
+        out.push('\n');
+        out.push_str(&item_pad);
+        out.push('}');
+        if index + 1 != candidates.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push_str(&pad);
+    out.push(']');
+}
+
+fn render_string_array_json(out: &mut String, values: &[String], indent: usize) {
+    if values.is_empty() {
+        out.push_str("[]");
+        return;
+    }
+
+    let pad = " ".repeat(indent);
+    let item_pad = " ".repeat(indent + 2);
+    out.push_str("[\n");
+    for (index, value) in values.iter().enumerate() {
+        out.push_str(&item_pad);
+        out.push('"');
+        out.push_str(&json_escape(value));
+        out.push('"');
+        if index + 1 != values.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push_str(&pad);
+    out.push(']');
+}
+
+fn render_inspection_markdown(report: &InspectionReport) -> String {
+    let mut out = String::new();
+    out.push_str("# Agent Policy Inspection\n\n");
+    out.push_str(&format!("- Repository: `{}`\n", report.repo));
+    out.push_str(&format!(
+        "- Sources: {}; candidate instructions: {}.\n",
+        report.summary.source_count, report.summary.candidate_instruction_count
+    ));
+    out.push_str(&format!(
+        "- Duplicates: {}; conflicts: {}; migration groups: {}.\n\n",
+        report.summary.duplicate_count,
+        report.summary.conflict_count,
+        report.summary.migration_candidate_count
+    ));
+
+    out.push_str("## Instruction Sources\n\n");
+    if report.instruction_sources.is_empty() {
+        out.push_str("- None found.\n\n");
+    } else {
+        out.push_str("| Path | Scope | Type | Instructions | Labels |\n");
+        out.push_str("| --- | --- | --- | ---: | --- |\n");
+        for source in &report.instruction_sources {
+            out.push_str(&format!(
+                "| `{}` | `{}` | `{}` | {} | {} |\n",
+                source.path,
+                source.scope,
+                instruction_source_type_name(&source.source_type),
+                source.instruction_count,
+                markdown_list_value(&source.labels)
+            ));
+        }
+        out.push('\n');
+    }
+
+    out.push_str("## Candidate Instructions\n\n");
+    if report.candidate_instructions.is_empty() {
+        out.push_str("- None extracted.\n\n");
+    } else {
+        for candidate in &report.candidate_instructions {
+            out.push_str(&format!(
+                "- `{}` {} (`{}`, {}, {})\n",
+                source_line_ref(candidate),
+                candidate.text,
+                candidate.topic,
+                migration_class_name(&candidate.migration_class),
+                candidate
+                    .target_policy
+                    .as_deref()
+                    .unwrap_or("no target policy")
+            ));
+        }
+        out.push('\n');
+    }
+
+    render_duplicate_section(&mut out, &report.duplicates);
+    render_conflict_section(&mut out, &report.conflicts);
+    render_migration_section(&mut out, &report.migration_candidates);
+    out
+}
+
+fn render_duplicate_section(out: &mut String, duplicates: &[InspectionDuplicate]) {
+    out.push_str("## Duplicates\n\n");
+    if duplicates.is_empty() {
+        out.push_str("- None detected.\n\n");
+        return;
+    }
+    for duplicate in duplicates {
+        out.push_str(&format!(
+            "- {} ({})\n  Suggestion: {}\n",
+            duplicate.instruction,
+            duplicate
+                .sources
+                .iter()
+                .map(|source| format!("`{source}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            duplicate.suggestion
+        ));
+    }
+    out.push('\n');
+}
+
+fn render_conflict_section(out: &mut String, conflicts: &[InspectionConflict]) {
+    out.push_str("## Conflicts\n\n");
+    if conflicts.is_empty() {
+        out.push_str("- None detected.\n\n");
+        return;
+    }
+    for conflict in conflicts {
+        out.push_str(&format!(
+            "- `{}`: {} ({})\n  Suggestion: {}\n",
+            conflict.topic,
+            conflict.summary,
+            conflict
+                .sources
+                .iter()
+                .map(|source| format!("`{source}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            conflict.suggestion
+        ));
+    }
+    out.push('\n');
+}
+
+fn render_migration_section(out: &mut String, candidates: &[MigrationCandidate]) {
+    out.push_str("## Migration Candidates\n\n");
+    if candidates.is_empty() {
+        out.push_str("- None proposed.\n");
+        return;
+    }
+    for candidate in candidates {
+        out.push_str(&format!(
+            "- `{}` from `{}` ({})\n",
+            candidate.target_policy,
+            candidate.source,
+            migration_class_name(&candidate.migration_class)
+        ));
+        for instruction in &candidate.instructions {
+            out.push_str(&format!("  - {instruction}\n"));
+        }
+    }
+}
+
+fn markdown_list_value(values: &[String]) -> String {
+    if values.is_empty() {
+        "None".to_string()
+    } else {
+        values
+            .iter()
+            .map(|value| format!("`{value}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -651,8 +1619,11 @@ fn not_implemented(command_name: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        markdown_candidate_policies, render_validation_markdown, scope_matches_task_files,
-        validate_repo, Cli, Commands, GlobalArgs, OutputFormat, RegistryCommands, ValidationStatus,
+        detect_inspection_conflicts, detect_inspection_duplicates, inspect_repo,
+        markdown_candidate_policies, render_inspection_json, render_inspection_markdown,
+        render_validation_markdown, scope_matches_task_files, validate_repo, Cli, Commands,
+        GlobalArgs, InspectionCandidate, MigrationClass, OutputFormat, RegistryCommands,
+        ValidationStatus,
     };
     use agent_policy_core::{
         build_instruction_bundle, BundleBuildOptions, DetectedContext, OutputBudget, TaskDetails,
@@ -739,6 +1710,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_inspect_with_json_format() {
+        let cli = Cli::try_parse_from(["agent-policy", "inspect", "--format", "json"])
+            .expect("parse inspect");
+        assert!(matches!(cli.global.format, Some(OutputFormat::Json)));
+        assert!(matches!(cli.command, Commands::Inspect));
+    }
+
+    #[test]
     fn parse_registry_sync_with_no_network() {
         let cli = Cli::try_parse_from(["agent-policy", "registry", "sync", "--no-network"])
             .expect("parse registry sync");
@@ -817,6 +1796,107 @@ mod tests {
 
         assert_eq!(report.status, ValidationStatus::Ok);
         assert_eq!(report.summary.policy_files_checked, 2);
+    }
+
+    #[test]
+    fn inspect_nested_fixture_reports_sources_candidates_and_migration_groups() {
+        let repo = fixture_repo("nested-instructions");
+        let discovered = discover(&repo).expect("discover fixture repo");
+        let report = inspect_repo(&repo, discovered);
+
+        assert_eq!(report.repo, "nested-instructions");
+        assert!(report.summary.source_count >= 5);
+        assert!(report.summary.candidate_instruction_count >= 9);
+        assert!(report
+            .instruction_sources
+            .iter()
+            .any(|source| source.path == "backend/payments/AGENTS.md"
+                && source.scope == "backend/payments/**"));
+        assert!(report
+            .candidate_instructions
+            .iter()
+            .any(|candidate| candidate.text == "Never log payment secrets."
+                && candidate.topic == "secrets"));
+        assert!(report
+            .migration_candidates
+            .iter()
+            .any(|candidate| candidate.source == "backend/payments/AGENTS.md"));
+
+        let json = render_inspection_json(&report);
+        assert!(json.contains("\"instruction_sources\""));
+        assert!(json.contains("\"duplicates\""));
+        assert!(json.contains("\"conflicts\""));
+
+        let markdown = render_inspection_markdown(&report);
+        assert!(markdown.contains("# Agent Policy Inspection"));
+        assert!(markdown.contains("## Duplicates"));
+        assert!(markdown.contains("## Conflicts"));
+        assert!(markdown.contains("## Migration Candidates"));
+    }
+
+    #[test]
+    fn inspect_reports_exact_duplicates_and_basic_conflicts() {
+        let candidates = vec![
+            test_inspection_candidate(
+                "Use pnpm for package commands.",
+                "AGENTS.md",
+                2,
+                ".",
+                "package_manager",
+                MigrationClass::RepoPolicy,
+            ),
+            test_inspection_candidate(
+                "Use npm for package commands.",
+                "frontend/AGENTS.md",
+                3,
+                "frontend/**",
+                "package_manager",
+                MigrationClass::KeepLocal,
+            ),
+            test_inspection_candidate(
+                "Do not edit generated files directly.",
+                "AGENTS.md",
+                4,
+                ".",
+                "generated_files",
+                MigrationClass::SharedRegistryPolicy,
+            ),
+            test_inspection_candidate(
+                "Do not edit generated files directly.",
+                "backend/AGENTS.md",
+                4,
+                "backend/**",
+                "generated_files",
+                MigrationClass::SharedRegistryPolicy,
+            ),
+            test_inspection_candidate(
+                "Edit generated files directly for emergency fixes.",
+                "backend/AGENTS.md",
+                5,
+                "backend/**",
+                "generated_files",
+                MigrationClass::KeepLocal,
+            ),
+        ];
+
+        let duplicates = detect_inspection_duplicates(&candidates);
+        assert_eq!(duplicates.len(), 1);
+        assert_eq!(
+            duplicates[0].instruction,
+            "Do not edit generated files directly."
+        );
+        assert_eq!(
+            duplicates[0].sources,
+            vec!["AGENTS.md:4", "backend/AGENTS.md:4"]
+        );
+
+        let conflicts = detect_inspection_conflicts(&candidates);
+        assert!(conflicts
+            .iter()
+            .any(|conflict| conflict.topic == "package_manager"));
+        assert!(conflicts
+            .iter()
+            .any(|conflict| conflict.topic == "generated_files"));
     }
 
     #[test]
@@ -923,6 +2003,26 @@ mod tests {
         ));
         assert!(!scope_matches_task_files("backend/**", &[]));
         assert!(scope_matches_task_files(".", &[]));
+    }
+
+    fn test_inspection_candidate(
+        text: &str,
+        source: &str,
+        line: usize,
+        scope: &str,
+        topic: &str,
+        migration_class: MigrationClass,
+    ) -> InspectionCandidate {
+        InspectionCandidate {
+            text: text.into(),
+            source: source.into(),
+            line,
+            scope: scope.into(),
+            candidate_type: "instruction".into(),
+            topic: topic.into(),
+            migration_class,
+            target_policy: Some("test.policy".into()),
+        }
     }
 
     fn fixture_repo(name: &str) -> PathBuf {
