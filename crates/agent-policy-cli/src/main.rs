@@ -4,12 +4,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use agent_policy_config::{load_config, load_config_from_path, validate_config_file};
+use agent_policy_config::{
+    load_config, load_config_from_path, validate_config_file, RegistryConfig,
+};
 use agent_policy_core::{
-    build_instruction_bundle, collect_policy_files, load_policies_from_dirs, render_bundle_json,
-    render_bundle_markdown, validate_policy_files, AppliesWhen, BundleBuildOptions,
-    DetectedContext, LoadedPolicy, OutputBudget, Policy, PolicyStatus, PolicyValidationSeverity,
-    PolicyVersion, SourceRef, TaskDetails, TaskIntent, TaskType,
+    build_instruction_bundle, collect_policy_files, load_policies_from_dirs,
+    load_policies_from_registry, render_bundle_json, render_bundle_markdown, validate_policy_files,
+    AppliesWhen, BundleBuildOptions, DetectedContext, LoadedPolicy, OutputBudget, Policy,
+    PolicyStatus, PolicyValidationSeverity, PolicyVersion, RegistryLoadOptions, SourceRef,
+    TaskDetails, TaskIntent, TaskType,
 };
 use agent_policy_discover::{
     discover, discover_json, DiscoveryResult, InstructionSource, InstructionSourceType,
@@ -1882,7 +1885,11 @@ fn run_get(global: &GlobalArgs, args: GetArgs) -> anyhow::Result<()> {
     };
 
     let intent = build_task_intent(repo, &config, &args);
-    let mut policies = load_policies_from_dirs(repo, &config.local_policies)?;
+    let mut policies = match &config.registry {
+        Some(registry) => load_registry_policies(repo, registry)?,
+        None => Vec::new(),
+    };
+    policies.extend(load_policies_from_dirs(repo, &config.local_policies)?);
     let discovered_sources = discover(repo)?;
     policies.extend(markdown_candidate_policies(
         repo,
@@ -1912,6 +1919,74 @@ fn run_get(global: &GlobalArgs, args: GetArgs) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn load_registry_policies(
+    repo: &Path,
+    registry: &RegistryConfig,
+) -> anyhow::Result<Vec<LoadedPolicy>> {
+    if registry.registry_type != "git" {
+        anyhow::bail!(
+            "unsupported registry type `{}`; only git is supported",
+            registry.registry_type
+        );
+    }
+    ensure_local_registry_url(&registry.url)?;
+
+    let cache_dir = resolve_configured_path(repo, &registry.cache_dir)?;
+    let source_name = cache_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("registry")
+        .to_string();
+
+    load_policies_from_registry(
+        &cache_dir,
+        RegistryLoadOptions {
+            source_name,
+            ..RegistryLoadOptions::default()
+        },
+    )
+}
+
+fn ensure_local_registry_url(url: &str) -> anyhow::Result<()> {
+    if url.starts_with("file://") {
+        return Ok(());
+    }
+    let path = Path::new(url);
+    if path.is_absolute() || url.starts_with('.') || !looks_like_remote_git_url(url) {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "registry.url `{url}` is not a local filesystem path; network registry fetch is not implemented"
+    )
+}
+
+fn looks_like_remote_git_url(url: &str) -> bool {
+    url.contains("://") || url.starts_with("git@") || url.starts_with("ssh@")
+}
+
+fn resolve_configured_path(repo: &Path, raw: &str) -> anyhow::Result<PathBuf> {
+    let expanded = expand_home(raw)?;
+    let path = PathBuf::from(expanded);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(repo.join(path))
+    }
+}
+
+fn expand_home(raw: &str) -> anyhow::Result<String> {
+    if raw == "~" {
+        return std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME is not set"));
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME is not set"))?;
+        return Ok(Path::new(&home).join(rest).display().to_string());
+    }
+    Ok(raw.to_string())
 }
 
 fn markdown_candidate_policies(
@@ -2144,12 +2219,13 @@ fn not_implemented(command_name: &str) -> anyhow::Result<()> {
 mod tests {
     use super::{
         detect_inspection_conflicts, detect_inspection_duplicates, inspect_repo,
-        markdown_candidate_policies, migration_dry_run_report, render_inspection_json,
-        render_inspection_markdown, render_migration_dry_run_json,
+        load_registry_policies, markdown_candidate_policies, migration_dry_run_report,
+        render_inspection_json, render_inspection_markdown, render_migration_dry_run_json,
         render_migration_dry_run_markdown, render_validation_markdown, run,
         scope_matches_task_files, validate_repo, Cli, Commands, GlobalArgs, InspectionCandidate,
         MigrationClass, OutputFormat, RegistryCommands, ValidationStatus,
     };
+    use agent_policy_config::load_config;
     use agent_policy_core::{
         build_instruction_bundle, BundleBuildOptions, DetectedContext, OutputBudget, TaskDetails,
         TaskIntent,
@@ -2344,6 +2420,26 @@ mod tests {
 
         assert_eq!(report.status, ValidationStatus::Ok);
         assert_eq!(report.summary.policy_files_checked, 2);
+    }
+
+    #[test]
+    fn loads_registry_policies_from_configured_cache_dir() {
+        let repo = fixture_repo("registry-app");
+        let config = load_config(&repo).expect("registry config should load");
+        let registry = config.registry.expect("registry should be configured");
+
+        let policies =
+            load_registry_policies(&repo, &registry).expect("local registry cache should load");
+
+        assert_eq!(policies.len(), 1);
+        assert_eq!(policies[0].policy.id, "org.security.secrets");
+        assert_eq!(
+            policies[0]
+                .source_ref
+                .as_ref()
+                .map(|source| source.0.as_str()),
+            Some("local-registry:org.security.secrets@3#0123456789ab")
+        );
     }
 
     #[test]

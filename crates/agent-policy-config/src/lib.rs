@@ -306,6 +306,18 @@ fn validate_config_registry(root: &Mapping, path: &Path, errors: &mut Vec<Config
         }
     }
 
+    if let Some(registry_type) = mapping_get(registry, "type").and_then(Value::as_str) {
+        if registry_type != "git" {
+            push_config_error(
+                errors,
+                "config_invalid_registry_type",
+                format!("registry.type `{registry_type}` is invalid; expected git."),
+                Some(path),
+                Some("registry.type"),
+            );
+        }
+    }
+
     if let Some(sync) = mapping_get(registry, "sync").and_then(Value::as_mapping) {
         if let Some(mode) = mapping_get(sync, "mode") {
             match mode.as_str() {
@@ -569,8 +581,8 @@ impl RegistryConfig {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.registry_type.trim().is_empty() {
-            bail!("registry.type must not be empty");
+        if self.registry_type != "git" {
+            bail!("registry.type must be git");
         }
         if self.url.trim().is_empty() {
             bail!("registry.url must not be empty");

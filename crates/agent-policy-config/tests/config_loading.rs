@@ -5,7 +5,7 @@ use std::{
 };
 
 use agent_policy_config::{
-    load_config, load_config_from_path, AgentPolicyConfig, OutputBudgetConfig,
+    load_config, load_config_from_path, AgentPolicyConfig, OutputBudgetConfig, SyncMode,
 };
 
 #[test]
@@ -50,6 +50,34 @@ fn explicit_config_path_loads_correctly() {
 
     assert_eq!(config.output_budget.max_tokens, 1024);
     assert_eq!(config.output_budget.include_explanations, "full");
+}
+
+#[test]
+fn registry_config_loads_documented_git_shape() {
+    let repo_dir = fixture_repo("registry-app");
+
+    let config = load_config(&repo_dir).expect("registry config should parse");
+    let registry = config.registry.expect("registry should be configured");
+
+    assert_eq!(registry.registry_type, "git");
+    assert_eq!(registry.url, "../local-registry");
+    assert_eq!(registry.r#ref, "main");
+    assert_eq!(registry.cache_dir, "../local-registry");
+    assert_eq!(registry.sync.mode, SyncMode::Manual);
+}
+
+#[test]
+fn unsupported_registry_type_is_rejected() {
+    let repo_dir = create_temp_dir("bad-registry-type");
+    fs::write(
+        repo_dir.join(".agent-policy.yaml"),
+        "registry:\n  type: s3\n  url: ./registry\n  ref: main\n  cache_dir: ./registry\n",
+    )
+    .expect("config should be written");
+
+    let error = load_config(&repo_dir).expect_err("unsupported registry type should fail");
+
+    assert!(format!("{error:#}").contains("registry.type must be git"));
 }
 
 #[test]

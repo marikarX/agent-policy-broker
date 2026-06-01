@@ -236,6 +236,21 @@ pub struct BundleBuildOptions {
     pub max_blocked_actions: Option<u32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryLoadOptions {
+    pub source_name: String,
+    pub policy_dirs: Vec<PathBuf>,
+}
+
+impl Default for RegistryLoadOptions {
+    fn default() -> Self {
+        Self {
+            source_name: "registry".to_string(),
+            policy_dirs: vec![PathBuf::from("policies")],
+        }
+    }
+}
+
 pub fn build_instruction_bundle(
     intent: &TaskIntent,
     policies: &[LoadedPolicy],
@@ -1283,6 +1298,28 @@ fn policy_version_to_string(version: &PolicyVersion) -> String {
     }
 }
 
+fn registry_policy_source_ref(
+    source_name: &str,
+    policy: &Policy,
+    commit: Option<&str>,
+) -> SourceRef {
+    let mut value = format!(
+        "{}:{}@{}",
+        source_name,
+        policy.id,
+        policy_version_to_string(&policy.version)
+    );
+    if let Some(commit) = commit {
+        value.push('#');
+        value.push_str(short_commit(commit));
+    }
+    SourceRef(value)
+}
+
+fn short_commit(commit: &str) -> &str {
+    commit.get(..12).unwrap_or(commit)
+}
+
 fn stable_bundle_id(intent: &TaskIntent, sources: &[SourceRef]) -> String {
     let mut seed = String::new();
     if let Some(summary) = intent.task.as_ref().and_then(|task| task.summary.as_ref()) {
@@ -1357,6 +1394,62 @@ where
     P: AsRef<Path>,
 {
     let repo_root = repo_root.as_ref();
+    let policy_files = collect_loadable_policy_files(repo_root, policy_dirs)?;
+
+    policy_files
+        .into_iter()
+        .map(|path| {
+            let policy = read_yaml_file::<Policy>(&path)?;
+            Ok(LoadedPolicy {
+                policy,
+                source_path: path,
+                source_ref: None,
+            })
+        })
+        .collect()
+}
+
+pub fn load_policies_from_registry(
+    registry_root: impl AsRef<Path>,
+    options: RegistryLoadOptions,
+) -> Result<Vec<LoadedPolicy>> {
+    let registry_root = registry_root.as_ref();
+    if !registry_root.exists() {
+        bail!(
+            "registry cache directory {} does not exist",
+            registry_root.display()
+        );
+    }
+    if !registry_root.is_dir() {
+        bail!(
+            "registry cache path {} is not a directory",
+            registry_root.display()
+        );
+    }
+
+    let commit = detect_git_commit(registry_root)?;
+    let policy_files = collect_loadable_policy_files(registry_root, &options.policy_dirs)?;
+
+    policy_files
+        .into_iter()
+        .map(|path| {
+            let policy = read_yaml_file::<Policy>(&path)?;
+            let source_ref =
+                registry_policy_source_ref(&options.source_name, &policy, commit.as_deref());
+            Ok(LoadedPolicy {
+                policy,
+                source_path: path,
+                source_ref: Some(source_ref),
+            })
+        })
+        .collect()
+}
+
+fn collect_loadable_policy_files<I, P>(repo_root: &Path, policy_dirs: I) -> Result<Vec<PathBuf>>
+where
+    I: IntoIterator<Item = P>,
+    P: AsRef<Path>,
+{
     let mut policy_files = Vec::new();
 
     for policy_dir in policy_dirs {
@@ -1385,18 +1478,7 @@ where
     }
 
     policy_files.sort();
-
-    policy_files
-        .into_iter()
-        .map(|path| {
-            let policy = read_yaml_file::<Policy>(&path)?;
-            Ok(LoadedPolicy {
-                policy,
-                source_path: path,
-                source_ref: None,
-            })
-        })
-        .collect()
+    Ok(policy_files)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1748,6 +1830,110 @@ where
         .with_context(|| format!("failed to read policy file {}", path.display()))?;
     serde_yaml::from_str::<T>(&raw)
         .with_context(|| format!("failed to parse policy file {}", path.display()))
+}
+
+fn detect_git_commit(repo_root: &Path) -> Result<Option<String>> {
+    let Some(git_dir) = resolve_git_dir(repo_root)? else {
+        return Ok(None);
+    };
+
+    let head_path = git_dir.join("HEAD");
+    let head = match fs::read_to_string(&head_path) {
+        Ok(head) => head.trim().to_string(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to read Git HEAD {}", head_path.display()));
+        }
+    };
+
+    if let Some(ref_name) = head.strip_prefix("ref: ") {
+        return read_git_ref(&git_dir, ref_name);
+    }
+
+    if is_hex_commit(&head) {
+        return Ok(Some(head));
+    }
+
+    Ok(None)
+}
+
+fn resolve_git_dir(repo_root: &Path) -> Result<Option<PathBuf>> {
+    let dot_git = repo_root.join(".git");
+    if dot_git.is_dir() {
+        return Ok(Some(dot_git));
+    }
+    if !dot_git.is_file() {
+        return Ok(None);
+    }
+
+    let raw = fs::read_to_string(&dot_git)
+        .with_context(|| format!("failed to read Git dir file {}", dot_git.display()))?;
+    let Some(git_dir) = raw.trim().strip_prefix("gitdir:").map(str::trim) else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(git_dir);
+    if path.is_absolute() {
+        Ok(Some(path))
+    } else {
+        Ok(Some(repo_root.join(path)))
+    }
+}
+
+fn read_git_ref(git_dir: &Path, ref_name: &str) -> Result<Option<String>> {
+    let ref_path = git_dir.join(ref_name);
+    match fs::read_to_string(&ref_path) {
+        Ok(value) => {
+            let value = value.trim().to_string();
+            if is_hex_commit(&value) {
+                Ok(Some(value))
+            } else {
+                Ok(None)
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            read_packed_git_ref(git_dir, ref_name)
+        }
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to read Git ref {}", ref_path.display()))
+        }
+    }
+}
+
+fn read_packed_git_ref(git_dir: &Path, ref_name: &str) -> Result<Option<String>> {
+    let packed_refs_path = git_dir.join("packed-refs");
+    let packed_refs = match fs::read_to_string(&packed_refs_path) {
+        Ok(packed_refs) => packed_refs,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to read Git packed refs {}",
+                    packed_refs_path.display()
+                )
+            });
+        }
+    };
+
+    for line in packed_refs.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with('^') {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let Some(commit) = parts.next() else {
+            continue;
+        };
+        if parts.next() == Some(ref_name) && is_hex_commit(commit) {
+            return Ok(Some(commit.to_string()));
+        }
+    }
+
+    Ok(None)
+}
+
+fn is_hex_commit(value: &str) -> bool {
+    value.len() >= 7 && value.chars().all(|character| character.is_ascii_hexdigit())
 }
 
 #[cfg(test)]
