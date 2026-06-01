@@ -3,10 +3,10 @@ use std::path::Path;
 
 use agent_policy_config::{load_config, load_config_from_path, RegistryConfig};
 use agent_policy_core::{
-    build_instruction_bundle, load_policies_from_dirs, load_policies_from_registry,
-    render_bundle_json, render_bundle_markdown, AppliesWhen, BundleBuildOptions, DetectedContext,
-    LoadedPolicy, OutputBudget, Policy, PolicyStatus, PolicyVersion, RegistryLoadOptions,
-    SourceRef, TaskDetails, TaskIntent, TaskType,
+    build_instruction_bundle_with_bm25_candidates, load_policies_from_dirs,
+    load_policies_from_registry, render_bundle_json, render_bundle_markdown, AppliesWhen,
+    BundleBuildOptions, DetectedContext, LoadedPolicy, OutputBudget, Policy, PolicyStatus,
+    PolicyVersion, RegistryLoadOptions, SourceRef, TaskDetails, TaskIntent, TaskType,
 };
 use agent_policy_discover::{
     discover, DiscoveryResult, InstructionSourceType, MarkdownInstructionCandidateType,
@@ -15,6 +15,7 @@ use agent_policy_discover::{
 use crate::cli::{GetArgs, GlobalArgs, OutputFormat};
 use crate::indexing::{
     agent_policy_cache_dir, get_indexed_policy_ids, index_registry_source, index_repo_source,
+    search_fulltext_candidates,
 };
 use crate::paths::resolve_configured_path;
 
@@ -37,13 +38,15 @@ pub(crate) fn run(global: &GlobalArgs, args: GetArgs) -> anyhow::Result<()> {
     let intent = build_task_intent(repo, &config, &args);
     let loaded = load_get_policies(repo, &config)?;
     let mut policies = loaded.policies;
+    let mut warnings = loaded.warnings;
     let discovered_sources = discover(repo)?;
     policies.extend(markdown_candidate_policies(
         repo,
         &discovered_sources,
         &intent.files,
     ));
-    let mut bundle = build_instruction_bundle(
+    let bm25_candidate_ids = bm25_candidate_policy_ids(repo, &config, &intent, &mut warnings)?;
+    let mut bundle = build_instruction_bundle_with_bm25_candidates(
         &intent,
         &policies,
         BundleBuildOptions {
@@ -54,8 +57,9 @@ pub(crate) fn run(global: &GlobalArgs, args: GetArgs) -> anyhow::Result<()> {
             max_required_checks: Some(config.output_budget.max_required_checks),
             max_blocked_actions: Some(config.output_budget.max_blocked_actions),
         },
+        &bm25_candidate_ids,
     )?;
-    bundle.warnings.extend(loaded.warnings);
+    bundle.warnings.extend(warnings);
 
     match global.format.clone().unwrap_or(OutputFormat::Json) {
         OutputFormat::Json => {
@@ -67,6 +71,71 @@ pub(crate) fn run(global: &GlobalArgs, args: GetArgs) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn bm25_candidate_policy_ids(
+    repo: &Path,
+    config: &agent_policy_config::AgentPolicyConfig,
+    intent: &TaskIntent,
+    warnings: &mut Vec<String>,
+) -> anyhow::Result<BTreeSet<String>> {
+    bm25_candidate_policy_ids_with_cache_dir(
+        repo,
+        config,
+        intent,
+        &agent_policy_cache_dir()?,
+        warnings,
+    )
+}
+
+pub(crate) fn bm25_candidate_policy_ids_with_cache_dir(
+    repo: &Path,
+    config: &agent_policy_config::AgentPolicyConfig,
+    intent: &TaskIntent,
+    cache_dir: &Path,
+    warnings: &mut Vec<String>,
+) -> anyhow::Result<BTreeSet<String>> {
+    let query = bm25_query(intent);
+    if query.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+
+    let source = match &config.registry {
+        Some(registry) => index_registry_source(repo, registry)?,
+        None => index_repo_source(repo)?,
+    };
+    let candidates = search_fulltext_candidates(
+        cache_dir,
+        &source,
+        &query,
+        bm25_candidate_limit(config),
+        warnings,
+    )?;
+
+    Ok(candidates
+        .into_iter()
+        .map(|candidate| candidate.id)
+        .collect())
+}
+
+fn bm25_query(intent: &TaskIntent) -> String {
+    let mut parts = Vec::new();
+    if let Some(task) = &intent.task {
+        if let Some(summary) = &task.summary {
+            parts.push(summary.as_str());
+        }
+        if let Some(task_type) = &task.task_type {
+            parts.push(task_type.0.as_str());
+        }
+    }
+    parts.extend(intent.risk_flags.iter().map(String::as_str));
+    parts.extend(intent.files.iter().map(String::as_str));
+    parts.join(" ")
+}
+
+fn bm25_candidate_limit(config: &agent_policy_config::AgentPolicyConfig) -> usize {
+    let max_instructions = config.output_budget.max_instructions as usize;
+    max_instructions.saturating_mul(3).max(8)
 }
 
 fn load_get_policies(

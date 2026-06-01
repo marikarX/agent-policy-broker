@@ -208,6 +208,10 @@ pub struct ContextBudgetReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate_policies_omitted: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_candidate_policies: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bm25_candidate_policies: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
@@ -256,18 +260,42 @@ pub fn build_instruction_bundle(
     policies: &[LoadedPolicy],
     options: BundleBuildOptions,
 ) -> Result<InstructionBundle> {
+    build_instruction_bundle_inner(intent, policies, options, &BTreeSet::new())
+}
+
+pub fn build_instruction_bundle_with_bm25_candidates(
+    intent: &TaskIntent,
+    policies: &[LoadedPolicy],
+    options: BundleBuildOptions,
+    bm25_candidate_ids: &BTreeSet<String>,
+) -> Result<InstructionBundle> {
+    build_instruction_bundle_inner(intent, policies, options, bm25_candidate_ids)
+}
+
+fn build_instruction_bundle_inner(
+    intent: &TaskIntent,
+    policies: &[LoadedPolicy],
+    options: BundleBuildOptions,
+    bm25_candidate_ids: &BTreeSet<String>,
+) -> Result<InstructionBundle> {
     let mut matched = policies
         .iter()
-        .filter_map(|loaded| match_policy(intent, loaded).transpose())
+        .filter_map(|loaded| match_policy(intent, loaded, bm25_candidate_ids).transpose())
         .collect::<Result<Vec<_>>>()?;
 
     matched.sort_by(|left, right| {
         right
-            .loaded
-            .policy
-            .priority
-            .unwrap_or(0)
-            .cmp(&left.loaded.policy.priority.unwrap_or(0))
+            .source
+            .authority_rank()
+            .cmp(&left.source.authority_rank())
+            .then_with(|| {
+                right
+                    .loaded
+                    .policy
+                    .priority
+                    .unwrap_or(0)
+                    .cmp(&left.loaded.policy.priority.unwrap_or(0))
+            })
             .then_with(|| right.score.rank.cmp(&left.score.rank))
             .then_with(|| {
                 right
@@ -280,6 +308,15 @@ pub fn build_instruction_bundle(
     });
 
     let candidate_count = matched.len();
+    let exact_candidate_count = matched
+        .iter()
+        .filter(|matched| matched.source == PolicyMatchSource::Exact)
+        .count();
+    let bm25_candidate_count = matched
+        .iter()
+        .filter(|matched| matched.source == PolicyMatchSource::Bm25)
+        .count();
+    let include_retrieval_counts = !bm25_candidate_ids.is_empty();
     let instruction_limit = options.max_instructions.map(|value| value as usize);
     let required_check_limit = options.max_required_checks.map(|value| value as usize);
     let blocked_action_limit = options.max_blocked_actions.map(|value| value as usize);
@@ -397,6 +434,10 @@ pub fn build_instruction_bundle(
             estimate_method: Some("approx_words".into()),
             candidate_policies_considered: Some(candidate_count as u32),
             candidate_policies_omitted: Some(omitted as u32),
+            exact_candidate_policies: include_retrieval_counts
+                .then_some(exact_candidate_count as u32),
+            bm25_candidate_policies: include_retrieval_counts
+                .then_some(bm25_candidate_count as u32),
             reason: context_budget_reason,
         },
         warnings,
@@ -550,6 +591,12 @@ fn render_budget_summary(context_budget: &ContextBudgetReport) -> String {
     if let Some(omitted) = context_budget.candidate_policies_omitted {
         parts.push(format!("policies omitted: {omitted}"));
     }
+    if let Some(exact) = context_budget.exact_candidate_policies {
+        parts.push(format!("exact candidates: {exact}"));
+    }
+    if let Some(bm25) = context_budget.bm25_candidate_policies {
+        parts.push(format!("BM25 candidates: {bm25}"));
+    }
 
     if parts.is_empty() {
         "No budget details reported.".into()
@@ -601,6 +648,22 @@ struct MatchedPolicy<'a> {
     loaded: &'a LoadedPolicy,
     reason: String,
     score: MatchScore,
+    source: PolicyMatchSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PolicyMatchSource {
+    Exact,
+    Bm25,
+}
+
+impl PolicyMatchSource {
+    fn authority_rank(self) -> u8 {
+        match self {
+            Self::Exact => 1,
+            Self::Bm25 => 0,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -839,6 +902,7 @@ fn fail_on_safety_weakening(
 fn match_policy<'a>(
     intent: &TaskIntent,
     loaded: &'a LoadedPolicy,
+    bm25_candidate_ids: &BTreeSet<String>,
 ) -> Result<Option<MatchedPolicy<'a>>> {
     let policy = &loaded.policy;
     if policy.status != PolicyStatus::Active {
@@ -850,23 +914,23 @@ fn match_policy<'a>(
     let mut score = MatchScore::default();
 
     if !matches_task_type(applies, intent, &mut reasons, &mut score) {
-        return Ok(None);
+        return Ok(bm25_policy_match(intent, loaded, bm25_candidate_ids));
     }
     if !matches_risk_flags(applies, intent, &mut reasons, &mut score) {
-        return Ok(None);
+        return Ok(bm25_policy_match(intent, loaded, bm25_candidate_ids));
     }
     if !matches_paths(applies, intent, &mut reasons, &mut score)? {
-        return Ok(None);
+        return Ok(bm25_policy_match(intent, loaded, bm25_candidate_ids));
     }
     if !matches_detected(applies, intent, &mut reasons, &mut score) {
-        return Ok(None);
+        return Ok(bm25_policy_match(intent, loaded, bm25_candidate_ids));
     }
     if !matches_repo(applies, intent, &mut reasons, &mut score) {
         return Ok(None);
     }
 
     if reasons.is_empty() && !is_global_policy(applies) {
-        return Ok(None);
+        return Ok(bm25_policy_match(intent, loaded, bm25_candidate_ids));
     }
 
     let reason = if reasons.is_empty() {
@@ -879,7 +943,37 @@ fn match_policy<'a>(
         loaded,
         reason,
         score,
+        source: PolicyMatchSource::Exact,
     }))
+}
+
+fn bm25_policy_match<'a>(
+    intent: &TaskIntent,
+    loaded: &'a LoadedPolicy,
+    bm25_candidate_ids: &BTreeSet<String>,
+) -> Option<MatchedPolicy<'a>> {
+    let policy = &loaded.policy;
+    if !bm25_candidate_ids.contains(&policy.id) || !repo_scope_matches(&policy.applies_when, intent)
+    {
+        return None;
+    }
+
+    Some(MatchedPolicy {
+        loaded,
+        reason: "Matched BM25 keyword candidate.".to_string(),
+        score: MatchScore {
+            rank: 10,
+            path_specificity: 0,
+        },
+        source: PolicyMatchSource::Bm25,
+    })
+}
+
+fn repo_scope_matches(applies: &AppliesWhen, intent: &TaskIntent) -> bool {
+    let Some(repo) = &intent.repo else {
+        return true;
+    };
+    applies.repos.is_empty() || applies.repos.iter().any(|candidate| candidate == repo)
 }
 
 fn matches_task_type(
@@ -2234,6 +2328,8 @@ No task summary provided.
                 estimate_method: Some("approx_words".into()),
                 candidate_policies_considered: Some(14),
                 candidate_policies_omitted: Some(9),
+                exact_candidate_policies: Some(14),
+                bm25_candidate_policies: Some(0),
                 reason: Some(
                     "Lower priority or duplicate non-mandatory guidance excluded by context budget."
                         .into(),

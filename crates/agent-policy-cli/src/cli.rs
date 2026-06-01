@@ -113,8 +113,8 @@ fn not_implemented(command_name: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 pub(crate) use crate::commands::get::{
-    load_get_policies_with_cache_dir, load_registry_policies, markdown_candidate_policies,
-    scope_matches_task_files,
+    bm25_candidate_policy_ids_with_cache_dir, load_get_policies_with_cache_dir,
+    load_registry_policies, markdown_candidate_policies, scope_matches_task_files,
 };
 #[cfg(test)]
 pub(crate) use crate::commands::inspect::{
@@ -139,8 +139,8 @@ pub(crate) use crate::indexing::{
 #[cfg(test)]
 mod tests {
     use super::{
-        build_metadata_index_with_cache_dir, detect_inspection_conflicts,
-        detect_inspection_duplicates, index_repo_source, inspect_repo,
+        bm25_candidate_policy_ids_with_cache_dir, build_metadata_index_with_cache_dir,
+        detect_inspection_conflicts, detect_inspection_duplicates, index_repo_source, inspect_repo,
         load_get_policies_with_cache_dir, load_registry_policies, markdown_candidate_policies,
         migration_dry_run_report, render_inspection_json, render_inspection_markdown,
         render_migration_dry_run_json, render_migration_dry_run_markdown,
@@ -153,8 +153,9 @@ mod tests {
         load_config, AgentPolicyConfig, RegistryConfig, RegistrySyncConfig, SyncMode,
     };
     use agent_policy_core::{
-        build_instruction_bundle, load_policies_from_dirs, render_bundle_json, BundleBuildOptions,
-        DetectedContext, LoadedPolicy, OutputBudget, TaskDetails, TaskIntent,
+        build_instruction_bundle, build_instruction_bundle_with_bm25_candidates,
+        load_policies_from_dirs, render_bundle_json, BundleBuildOptions, DetectedContext,
+        LoadedPolicy, OutputBudget, TaskDetails, TaskIntent,
     };
     use agent_policy_discover::discover;
     use clap::{error::ErrorKind, CommandFactory, Parser};
@@ -748,6 +749,181 @@ instructions:
                 .map(|instruction| instruction.text.as_str()),
             Some("Follow the high priority payment change process.")
         );
+    }
+
+    #[test]
+    fn get_includes_keyword_only_bm25_policy_candidate() {
+        let temp = TempDir::new("bm25-keyword-only");
+        let repo = temp.path().join("repo");
+        let policies_dir = repo.join(".agent-policy").join("policies");
+        fs::create_dir_all(&policies_dir).expect("create policy dir");
+        fs::write(
+            policies_dir.join("keyword.yaml"),
+            r#"id: org.keyword.refunds
+version: 1
+status: active
+applies_when:
+  paths:
+    - docs/legacy-refunds/**
+retrieval:
+  semantic_terms:
+    - refund settlement reconciliation retry idempotency
+instructions:
+  - Preserve refund settlement reconciliation during retry changes.
+"#,
+        )
+        .expect("write keyword policy");
+        let config = AgentPolicyConfig::default();
+        let cache_dir = temp.path().join("cache");
+        build_metadata_index_with_cache_dir(&repo, &config, &cache_dir).expect("build index");
+        let intent = TaskIntent {
+            repo: Some("repo".to_string()),
+            branch: None,
+            task: Some(TaskDetails {
+                summary: Some("refund settlement retry".to_string()),
+                task_type: None,
+            }),
+            files: vec!["src/payments/refunds.rs".to_string()],
+            detected: Some(DetectedContext {
+                languages: vec!["rust".to_string()],
+                frameworks: Vec::new(),
+                package_manager: None,
+            }),
+            risk_flags: Vec::new(),
+            expected_commands: Vec::new(),
+            expected_check_ids: Vec::new(),
+            output_budget: None,
+        };
+        let mut warnings = Vec::new();
+        let bm25_ids = bm25_candidate_policy_ids_with_cache_dir(
+            &repo,
+            &config,
+            &intent,
+            &cache_dir,
+            &mut warnings,
+        )
+        .expect("bm25 candidates");
+        let policies =
+            load_policies_from_dirs(&repo, &config.local_policies).expect("load policies");
+
+        let bundle = build_instruction_bundle_with_bm25_candidates(
+            &intent,
+            &policies,
+            BundleBuildOptions {
+                max_tokens: Some(900),
+                max_instructions: Some(4),
+                max_required_checks: Some(4),
+                max_blocked_actions: Some(4),
+            },
+            &bm25_ids,
+        )
+        .expect("build bundle");
+
+        assert!(warnings.is_empty());
+        assert!(bm25_ids.contains("org.keyword.refunds"));
+        assert_eq!(
+            bundle.instructions[0].text,
+            "Preserve refund settlement reconciliation during retry changes."
+        );
+        assert_eq!(bundle.context_budget.exact_candidate_policies, Some(0));
+        assert_eq!(bundle.context_budget.bm25_candidate_policies, Some(1));
+        assert!(bundle.explanations[0]
+            .reason
+            .contains("BM25 keyword candidate"));
+    }
+
+    #[test]
+    fn exact_path_and_risk_policy_outranks_generic_bm25_match() {
+        let temp = TempDir::new("bm25-exact-outranks");
+        let repo = temp.path().join("repo");
+        let policies_dir = repo.join(".agent-policy").join("policies");
+        fs::create_dir_all(&policies_dir).expect("create policy dir");
+        fs::write(
+            policies_dir.join("exact.yaml"),
+            r#"id: org.exact.payments
+version: 1
+status: active
+applies_when:
+  paths:
+    - src/payments/**
+  risk_flags:
+    - payments
+instructions:
+  - Follow the payment-specific change process.
+"#,
+        )
+        .expect("write exact policy");
+        fs::write(
+            policies_dir.join("generic.yaml"),
+            r#"id: org.generic.refunds
+version: 1
+status: active
+applies_when:
+  paths:
+    - docs/legacy-refunds/**
+instructions:
+  - Generic refund settlement retry guidance is candidate-only context.
+"#,
+        )
+        .expect("write generic policy");
+        let config = AgentPolicyConfig::default();
+        let cache_dir = temp.path().join("cache");
+        build_metadata_index_with_cache_dir(&repo, &config, &cache_dir).expect("build index");
+        let intent = TaskIntent {
+            repo: Some("repo".to_string()),
+            branch: None,
+            task: Some(TaskDetails {
+                summary: Some("refund settlement retry".to_string()),
+                task_type: None,
+            }),
+            files: vec!["src/payments/refunds.rs".to_string()],
+            detected: Some(DetectedContext {
+                languages: vec!["rust".to_string()],
+                frameworks: Vec::new(),
+                package_manager: None,
+            }),
+            risk_flags: vec!["payments".to_string()],
+            expected_commands: Vec::new(),
+            expected_check_ids: Vec::new(),
+            output_budget: None,
+        };
+        let mut warnings = Vec::new();
+        let bm25_ids = bm25_candidate_policy_ids_with_cache_dir(
+            &repo,
+            &config,
+            &intent,
+            &cache_dir,
+            &mut warnings,
+        )
+        .expect("bm25 candidates");
+        let policies =
+            load_policies_from_dirs(&repo, &config.local_policies).expect("load policies");
+
+        let bundle = build_instruction_bundle_with_bm25_candidates(
+            &intent,
+            &policies,
+            BundleBuildOptions {
+                max_tokens: Some(900),
+                max_instructions: Some(2),
+                max_required_checks: Some(4),
+                max_blocked_actions: Some(4),
+            },
+            &bm25_ids,
+        )
+        .expect("build bundle");
+
+        assert!(warnings.is_empty());
+        assert!(bm25_ids.contains("org.generic.refunds"));
+        assert_eq!(
+            bundle.instructions[0].text,
+            "Follow the payment-specific change process."
+        );
+        assert_eq!(
+            bundle.instructions[1].text,
+            "Generic refund settlement retry guidance is candidate-only context."
+        );
+        assert_eq!(bundle.context_budget.exact_candidate_policies, Some(1));
+        assert_eq!(bundle.context_budget.bm25_candidate_policies, Some(1));
     }
 
     #[test]
