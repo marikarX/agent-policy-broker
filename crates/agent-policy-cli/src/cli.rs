@@ -153,7 +153,7 @@ pub(crate) struct MigrateArgs {
     pub(crate) dry_run: bool,
     #[arg(
         long,
-        help = "Write proposed draft policies under .agent-policy/policies"
+        help = "Write proposed draft policies under .agent-policy/migration"
     )]
     pub(crate) write: bool,
 }
