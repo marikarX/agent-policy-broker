@@ -368,6 +368,8 @@ fn build_instruction_bundle_inner(
     let mut seen_required_checks: BTreeSet<String> = BTreeSet::new();
     let mut seen_blocked_actions: BTreeSet<BlockedAction> = BTreeSet::new();
     let mut omitted = 0usize;
+    let mut omitted_required_checks = 0usize;
+    let mut omitted_blocked_actions = 0usize;
     let conflict_resolution = resolve_instruction_conflicts(&matched)?;
 
     for matched_policy in &matched {
@@ -413,6 +415,7 @@ fn build_instruction_bundle_inner(
                 continue;
             }
             if required_check_limit.is_some_and(|limit| required_checks.len() >= limit) {
+                omitted_required_checks += 1;
                 continue;
             }
 
@@ -431,6 +434,7 @@ fn build_instruction_bundle_inner(
                 continue;
             }
             if blocked_action_limit.is_some_and(|limit| blocked_actions.len() >= limit) {
+                omitted_blocked_actions += 1;
                 continue;
             }
             push_unique(&mut sources, source.clone());
@@ -441,6 +445,14 @@ fn build_instruction_bundle_inner(
         if !included_policy_content && !conflict_omitted_policy_content {
             omitted += 1;
         }
+    }
+
+    if omitted_required_checks > 0 || omitted_blocked_actions > 0 {
+        bail!(
+            "security_budget_exceeded: context budget would omit {omitted_required_checks} required {} and {omitted_blocked_actions} blocked {}; increase max_required_checks or max_blocked_actions",
+            pluralize(omitted_required_checks, "check", "checks"),
+            pluralize(omitted_blocked_actions, "action", "actions")
+        );
     }
 
     let estimated_tokens =
@@ -2775,6 +2787,59 @@ No task summary provided.
             vec!["Do not edit generated code.", "Do not commit secrets."]
         );
         assert_eq!(bundle.context_budget.candidate_policies_omitted, Some(0));
+    }
+
+    #[test]
+    fn budget_fails_closed_if_required_checks_would_be_omitted() {
+        let mut policy = test_policy(
+            "policy.required_checks",
+            AppliesWhen::default(),
+            "Keep guidance.",
+        );
+        policy.policy.required_checks = vec!["cargo test".into(), "cargo fmt --check".into()];
+
+        let error = build_instruction_bundle(
+            &test_intent(Vec::new()),
+            &[policy],
+            BundleBuildOptions {
+                max_tokens: Some(900),
+                max_instructions: Some(8),
+                max_required_checks: Some(1),
+                max_blocked_actions: Some(4),
+            },
+        )
+        .expect_err("required check omission should fail closed");
+
+        assert!(error.to_string().contains("security_budget_exceeded"));
+        assert!(error.to_string().contains("1 required check"));
+    }
+
+    #[test]
+    fn budget_fails_closed_if_blocked_actions_would_be_omitted() {
+        let mut policy = test_policy(
+            "policy.blocked_actions",
+            AppliesWhen::default(),
+            "Keep guidance.",
+        );
+        policy.policy.blocked_actions = vec![
+            BlockedAction("Do not edit generated code.".into()),
+            BlockedAction("Do not commit secrets.".into()),
+        ];
+
+        let error = build_instruction_bundle(
+            &test_intent(Vec::new()),
+            &[policy],
+            BundleBuildOptions {
+                max_tokens: Some(900),
+                max_instructions: Some(8),
+                max_required_checks: Some(4),
+                max_blocked_actions: Some(1),
+            },
+        )
+        .expect_err("blocked action omission should fail closed");
+
+        assert!(error.to_string().contains("security_budget_exceeded"));
+        assert!(error.to_string().contains("1 blocked action"));
     }
 
     #[test]

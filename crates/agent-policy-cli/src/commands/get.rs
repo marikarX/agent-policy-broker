@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use agent_policy_config::{load_config, load_config_from_path, RegistryConfig};
+use agent_policy_config::{load_config, load_config_from_path, OutputBudgetConfig, RegistryConfig};
 use agent_policy_core::{
     build_instruction_bundle_with_bm25_candidates, load_policies_from_dirs,
     load_policies_from_registry, render_bundle_json, render_bundle_markdown, AppliesWhen,
@@ -55,7 +55,8 @@ pub(crate) fn build_instruction_bundle_for_get(
         None => load_config(repo)?,
     };
 
-    let intent = build_task_intent(repo, &config, args);
+    let output_budget = effective_output_budget(&config.output_budget, global.config.is_some());
+    let intent = build_task_intent(repo, args, &output_budget);
     let loaded = load_get_policies(repo, &config)?;
     let mut policies = loaded.policies;
     let mut warnings = loaded.warnings;
@@ -72,18 +73,47 @@ pub(crate) fn build_instruction_bundle_for_get(
     let mut bundle = build_instruction_bundle_with_bm25_candidates(
         &intent,
         &policies,
-        BundleBuildOptions {
-            max_tokens: args.max_tokens.or(Some(config.output_budget.max_tokens)),
-            max_instructions: args
-                .max_instructions
-                .or(Some(config.output_budget.max_instructions)),
-            max_required_checks: Some(config.output_budget.max_required_checks),
-            max_blocked_actions: Some(config.output_budget.max_blocked_actions),
-        },
+        bundle_build_options(args, &output_budget),
         &bm25_candidate_ids,
     )?;
     bundle.warnings.extend(warnings);
     Ok(bundle)
+}
+
+fn effective_output_budget(
+    config_budget: &OutputBudgetConfig,
+    explicit_config_supplied: bool,
+) -> OutputBudgetConfig {
+    if explicit_config_supplied {
+        return config_budget.clone();
+    }
+
+    let safe_defaults = OutputBudgetConfig::default();
+    OutputBudgetConfig {
+        max_tokens: config_budget.max_tokens.min(safe_defaults.max_tokens),
+        max_instructions: config_budget
+            .max_instructions
+            .min(safe_defaults.max_instructions),
+        max_required_checks: config_budget
+            .max_required_checks
+            .min(safe_defaults.max_required_checks),
+        max_blocked_actions: config_budget
+            .max_blocked_actions
+            .min(safe_defaults.max_blocked_actions),
+        include_examples: config_budget.include_examples,
+        include_explanations: config_budget.include_explanations.clone(),
+    }
+}
+
+fn bundle_build_options(args: &GetArgs, output_budget: &OutputBudgetConfig) -> BundleBuildOptions {
+    BundleBuildOptions {
+        max_tokens: args.max_tokens.or(Some(output_budget.max_tokens)),
+        max_instructions: args
+            .max_instructions
+            .or(Some(output_budget.max_instructions)),
+        max_required_checks: Some(output_budget.max_required_checks),
+        max_blocked_actions: Some(output_budget.max_blocked_actions),
+    }
 }
 
 fn bm25_candidate_policy_ids(
@@ -382,8 +412,8 @@ fn normalize_task_file(file: &str) -> String {
 
 fn build_task_intent(
     repo: &std::path::Path,
-    config: &agent_policy_config::AgentPolicyConfig,
     args: &GetArgs,
+    output_budget: &OutputBudgetConfig,
 ) -> TaskIntent {
     TaskIntent {
         repo: repo
@@ -401,14 +431,14 @@ fn build_task_intent(
         expected_commands: Vec::new(),
         expected_check_ids: Vec::new(),
         output_budget: Some(OutputBudget {
-            max_tokens: args.max_tokens.or(Some(config.output_budget.max_tokens)),
+            max_tokens: args.max_tokens.or(Some(output_budget.max_tokens)),
             max_instructions: args
                 .max_instructions
-                .or(Some(config.output_budget.max_instructions)),
-            max_required_checks: Some(config.output_budget.max_required_checks),
-            max_blocked_actions: Some(config.output_budget.max_blocked_actions),
-            include_examples: Some(config.output_budget.include_examples),
-            include_explanations: Some(config.output_budget.include_explanations.clone()),
+                .or(Some(output_budget.max_instructions)),
+            max_required_checks: Some(output_budget.max_required_checks),
+            max_blocked_actions: Some(output_budget.max_blocked_actions),
+            include_examples: Some(output_budget.include_examples),
+            include_explanations: Some(output_budget.include_explanations.clone()),
         }),
     }
 }
@@ -445,5 +475,107 @@ fn matches_extension(file: &str, extensions: &[&str]) -> bool {
 fn push_unique(items: &mut Vec<String>, item: String) {
     if !items.contains(&item) {
         items.push(item);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_task_intent, bundle_build_options, effective_output_budget};
+    use crate::cli::{GetArgs, InstructionDiscoveryMode};
+    use agent_policy_config::OutputBudgetConfig;
+    use std::path::Path;
+
+    #[test]
+    fn repo_config_budget_is_clamped_to_safe_defaults() {
+        let config_budget = OutputBudgetConfig {
+            max_tokens: 50_000,
+            max_instructions: 500,
+            max_required_checks: 250,
+            max_blocked_actions: 125,
+            include_examples: true,
+            include_explanations: "full".into(),
+        };
+
+        let effective = effective_output_budget(&config_budget, false);
+        let safe_defaults = OutputBudgetConfig::default();
+
+        assert_eq!(effective.max_tokens, safe_defaults.max_tokens);
+        assert_eq!(effective.max_instructions, safe_defaults.max_instructions);
+        assert_eq!(
+            effective.max_required_checks,
+            safe_defaults.max_required_checks
+        );
+        assert_eq!(
+            effective.max_blocked_actions,
+            safe_defaults.max_blocked_actions
+        );
+        assert!(effective.include_examples);
+        assert_eq!(effective.include_explanations, "full");
+    }
+
+    #[test]
+    fn explicit_config_budget_is_preserved() {
+        let config_budget = OutputBudgetConfig {
+            max_tokens: 50_000,
+            max_instructions: 500,
+            max_required_checks: 250,
+            max_blocked_actions: 125,
+            include_examples: true,
+            include_explanations: "full".into(),
+        };
+
+        let effective = effective_output_budget(&config_budget, true);
+
+        assert_eq!(effective, config_budget);
+    }
+
+    #[test]
+    fn effective_budget_is_used_for_intent_and_bundle_options() {
+        let config_budget = OutputBudgetConfig {
+            max_tokens: 50_000,
+            max_instructions: 500,
+            max_required_checks: 250,
+            max_blocked_actions: 125,
+            include_examples: false,
+            include_explanations: "compact".into(),
+        };
+        let effective = effective_output_budget(&config_budget, false);
+        let args = GetArgs {
+            task: Some("update policy budget handling".into()),
+            task_type: Some("fix_bug".into()),
+            files: vec!["crates/agent-policy-cli/src/commands/get.rs".into()],
+            risk: Vec::new(),
+            max_instructions: None,
+            max_tokens: None,
+            instruction_mode: InstructionDiscoveryMode::Generic,
+        };
+
+        let intent = build_task_intent(Path::new("agent-policy-broker"), &args, &effective);
+        let intent_budget = intent.output_budget.expect("intent should include budget");
+        let options = bundle_build_options(&args, &effective);
+
+        assert_eq!(intent_budget.max_tokens, Some(effective.max_tokens));
+        assert_eq!(
+            intent_budget.max_instructions,
+            Some(effective.max_instructions)
+        );
+        assert_eq!(
+            intent_budget.max_required_checks,
+            Some(effective.max_required_checks)
+        );
+        assert_eq!(
+            intent_budget.max_blocked_actions,
+            Some(effective.max_blocked_actions)
+        );
+        assert_eq!(options.max_tokens, Some(effective.max_tokens));
+        assert_eq!(options.max_instructions, Some(effective.max_instructions));
+        assert_eq!(
+            options.max_required_checks,
+            Some(effective.max_required_checks)
+        );
+        assert_eq!(
+            options.max_blocked_actions,
+            Some(effective.max_blocked_actions)
+        );
     }
 }
