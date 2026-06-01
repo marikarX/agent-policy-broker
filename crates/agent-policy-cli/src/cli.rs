@@ -26,17 +26,36 @@ pub(crate) enum InstructionDiscoveryMode {
 
 #[derive(Clone, Debug, Args)]
 pub(crate) struct GlobalArgs {
-    #[arg(long, global = true, value_name = "path")]
+    #[arg(
+        long,
+        global = true,
+        value_name = "path",
+        help = "Repository path to inspect; defaults to the current directory"
+    )]
     pub(crate) repo: Option<PathBuf>,
-    #[arg(long, global = true, value_name = "path")]
+    #[arg(
+        long,
+        global = true,
+        value_name = "path",
+        help = "Explicit .agent-policy.yaml config path"
+    )]
     pub(crate) config: Option<PathBuf>,
-    #[arg(long, global = true, value_enum)]
+    #[arg(
+        long,
+        global = true,
+        value_enum,
+        help = "Output format for commands that support rendering"
+    )]
     pub(crate) format: Option<OutputFormat>,
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help = "Print diagnostic details when supported")]
     pub(crate) verbose: bool,
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help = "Suppress nonessential output")]
     pub(crate) quiet: bool,
-    #[arg(long, global = true)]
+    #[arg(
+        long,
+        global = true,
+        help = "Use only local files and cached registries; do not attempt network operations"
+    )]
     pub(crate) no_network: bool,
 }
 
@@ -52,7 +71,7 @@ pub(crate) enum Commands {
     Inspect(InspectArgs),
     /// Propose policy drafts from existing instruction sources.
     Migrate(MigrateArgs),
-    /// Build or rebuild local retrieval indexes.
+    /// Build or rebuild local metadata and full-text indexes.
     Index,
     /// Manage policy registries.
     Registry(RegistryArgs),
@@ -68,53 +87,98 @@ pub(crate) struct RegistryArgs {
 
 #[derive(Clone, Debug, Args)]
 pub(crate) struct GetArgs {
-    #[arg(long, value_name = "text")]
+    #[arg(long, value_name = "text", help = "Task summary")]
     pub(crate) task: Option<String>,
-    #[arg(long = "type", value_name = "task_type")]
+    #[arg(
+        long = "type",
+        value_name = "task_type",
+        help = "Task type such as fix_bug, add_feature, refactor, test, or docs"
+    )]
     pub(crate) task_type: Option<String>,
-    #[arg(long, value_name = "path", num_args = 1..)]
+    #[arg(long, value_name = "path", num_args = 1.., help = "Relevant file paths")]
     pub(crate) files: Vec<String>,
-    #[arg(long, value_name = "flag", num_args = 1..)]
+    #[arg(
+        long,
+        value_name = "flag",
+        num_args = 1..,
+        help = "Risk flags such as auth, payments, migrations, public_api, or secrets"
+    )]
     pub(crate) risk: Vec<String>,
-    #[arg(long, value_name = "number")]
+    #[arg(
+        long,
+        value_name = "number",
+        help = "Override instruction count budget"
+    )]
     pub(crate) max_instructions: Option<u32>,
-    #[arg(long, value_name = "number")]
+    #[arg(
+        long,
+        value_name = "number",
+        help = "Override approximate output token budget"
+    )]
     pub(crate) max_tokens: Option<u32>,
-    #[arg(long = "instruction-mode", value_enum, default_value_t = InstructionDiscoveryMode::Generic)]
+    #[arg(
+        long = "instruction-mode",
+        value_enum,
+        default_value_t = InstructionDiscoveryMode::Generic,
+        help = "Instruction discovery mode for Markdown guidance"
+    )]
     pub(crate) instruction_mode: InstructionDiscoveryMode,
 }
 
 #[derive(Clone, Debug, Args)]
 pub(crate) struct DiscoverArgs {
-    #[arg(long, value_enum, default_value_t = InstructionDiscoveryMode::Generic)]
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = InstructionDiscoveryMode::Generic,
+        help = "Instruction discovery mode"
+    )]
     pub(crate) mode: InstructionDiscoveryMode,
 }
 
 #[derive(Clone, Debug, Args)]
 pub(crate) struct InspectArgs {
-    #[arg(long, value_enum, default_value_t = InstructionDiscoveryMode::Generic)]
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = InstructionDiscoveryMode::Generic,
+        help = "Instruction discovery mode"
+    )]
     pub(crate) mode: InstructionDiscoveryMode,
 }
 
 #[derive(Debug, Args)]
 pub(crate) struct MigrateArgs {
-    #[arg(long)]
+    #[arg(long, help = "Print proposed draft policies without writing files")]
     pub(crate) dry_run: bool,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Write proposed draft policies under .agent-policy/policies"
+    )]
     pub(crate) write: bool,
 }
 
 #[derive(Clone, Debug, Args)]
 pub(crate) struct ServeArgs {
-    #[arg(long, default_value = "127.0.0.1", value_name = "host")]
+    #[arg(
+        long,
+        default_value = "127.0.0.1",
+        value_name = "host",
+        help = "Host to bind; defaults to localhost"
+    )]
     pub(crate) host: String,
-    #[arg(long, default_value_t = 8765, value_name = "port")]
+    #[arg(
+        long,
+        default_value_t = 8765,
+        value_name = "port",
+        help = "Port to bind"
+    )]
     pub(crate) port: u16,
 }
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum RegistryCommands {
-    /// Fetch or update a Git-backed policy registry.
+    /// Validate and use a local cached Git policy registry.
     Sync,
 }
 

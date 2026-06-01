@@ -1,6 +1,6 @@
 # Getting started
 
-Agent Policy Broker is currently a design-first open-source project. This guide describes the intended local-first workflow and the minimum behavior expected from the first implementation.
+Agent Policy Broker is an early local-first Rust CLI and service prototype. This guide describes the implemented MVP workflow.
 
 ## Core workflow
 
@@ -13,9 +13,9 @@ Agent Policy Broker is currently a design-first open-source project. This guide 
 6. The coding agent follows the returned instructions and reports the policy version.
 ```
 
-## Intended CLI
+## CLI
 
-The open-source CLI should support a command similar to:
+Compile an instruction bundle:
 
 ```bash
 agent-policy get --repo . --task "fix refund retry handling"
@@ -75,12 +75,14 @@ See [`../examples/AGENTS.md`](../examples/AGENTS.md) for a starter `AGENTS.md`.
 The first implementation should be able to:
 
 - load local YAML policy files
-- accept task intent through CLI flags or JSON input
+- accept task intent through CLI flags
 - detect basic repository metadata
 - match policies by repo, path, language, framework, task type, and risk flag
 - return compact JSON or Markdown instructions
 - include source policy IDs and versions
 - fail safely with a clear message
+
+JSON intent input is not implemented in the MVP.
 
 ## Fallback behavior
 

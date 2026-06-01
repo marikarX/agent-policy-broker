@@ -43,7 +43,7 @@ agent-policy inspect --repo .
 For a migration-oriented report:
 
 ```bash
-agent-policy inspect --repo . --format markdown --output agent-policy-report.md
+agent-policy inspect --repo . --format markdown > agent-policy-report.md
 ```
 
 For machine-readable output:

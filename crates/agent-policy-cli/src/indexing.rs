@@ -220,8 +220,7 @@ pub(crate) fn read_index_manifest(path: &Path) -> anyhow::Result<Option<IndexMan
             anyhow::anyhow!("failed to parse index manifest {}: {error}", path.display())
         })?)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error)
-            .map_err(anyhow::Error::from)
+        Err(error) => Err(anyhow::Error::from(error))
             .with_context(|| format!("failed to read index manifest {}", path.display())),
     }
 }
@@ -800,9 +799,7 @@ fn index_source_kind_name(kind: IndexSourceKind) -> &'static str {
 }
 
 fn markdown_inline(text: &str) -> String {
-    text.replace('`', "\\`")
-        .replace('\n', " ")
-        .replace('\r', " ")
+    text.replace('`', "\\`").replace(['\n', '\r'], " ")
 }
 
 fn json_escape(value: &str) -> String {

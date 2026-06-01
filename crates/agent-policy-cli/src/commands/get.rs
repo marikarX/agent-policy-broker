@@ -55,7 +55,7 @@ pub(crate) fn build_instruction_bundle_for_get(
         None => load_config(repo)?,
     };
 
-    let intent = build_task_intent(repo, &config, &args);
+    let intent = build_task_intent(repo, &config, args);
     let loaded = load_get_policies(repo, &config)?;
     let mut policies = loaded.policies;
     let mut warnings = loaded.warnings;

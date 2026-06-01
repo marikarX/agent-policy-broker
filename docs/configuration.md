@@ -9,12 +9,11 @@ Configuration should be explicit, local-first, and safe by default.
 ```yaml
 registry:
   type: git
-  url: git@github.com:company/agent-policy-registry.git
+  url: ~/.cache/agent-policy/registries/company
   ref: main
   cache_dir: ~/.cache/agent-policy/registries/company
   sync:
-    mode: auto
-    max_age_minutes: 15
+    mode: manual
 
 local_policies:
   - .agent-policy/policies
@@ -77,7 +76,7 @@ Fields:
 
 ```text
 type        Registry backend. Initial supported value: git.
-url         Git remote URL.
+url         Local filesystem path or file:// URL in the MVP. Remote URLs are recorded but not fetched.
 ref         Branch, tag, or commit SHA.
 cache_dir   Local cache path.
 ```
@@ -96,8 +95,8 @@ registry:
 Supported modes:
 
 ```text
-manual   Update only when `agent-policy registry sync` is run.
-auto     Fetch or pull when cache is older than max_age_minutes.
+manual   Use the configured local cache when `agent-policy registry sync` is run.
+auto     MVP behavior is cached-only; remote fetch or pull is not implemented.
 pinned   Use an exact commit SHA and do not auto-update.
 offline  Use local cache only.
 ```
@@ -134,6 +133,8 @@ instruction_sources:
 Instruction sources are path-scoped. A file at `backend/AGENTS.md` applies to `backend/**`.
 
 Repository-local configuration should list instruction files to discover, not promote those files to trusted precedence. The optional `trusted` list is reserved for trusted operator or deployment configuration that is outside branch-controlled repository contents. Branch-controlled files should be treated as untrusted unless the deployment has a review model that makes the path authoritative.
+
+The MVP reads full registry settings from `.agent-policy.yaml` or an explicit `--config` file, but registry loading and `registry sync` are local-only: remote clone, fetch, and pull are not implemented. Hardened deployments should prefer trusted operator configuration for registry URLs, refs, cache directories, and sync modes, and should reject branch-controlled overrides unless they exactly match an allowlist.
 
 MVP implementations may support only exact path entries in `trusted`. Later versions may support glob patterns and source classes.
 
@@ -206,9 +207,9 @@ index:
     backend: sqlite_vec
 ```
 
-Source code should not be indexed by default. Users may explicitly include source paths if they understand the privacy and performance tradeoffs.
+Source code is not indexed by default because the default `index.include` list is empty. Users may explicitly include source paths if they understand the privacy and performance tradeoffs.
 
-`index.vector` is disabled by default. The prototype local vector backend is currently compiled only with the Rust `sqlite-vec` feature, but it is an in-memory deterministic implementation while sqlite-vec integration is evaluated. It makes no remote embedding calls, indexes only caller-provided policy/retrieval text or explicitly included docs, and returns candidate IDs and scores only. Vector matches are candidate guidance; metadata filters, policy priority, and output budget still control the final bundle.
+`index.vector` is disabled by default. The MVP CLI index builds metadata and Tantivy full-text indexes; vector indexing is a future local-only retrieval path and makes no remote embedding calls.
 
 ## `output_budget`
 

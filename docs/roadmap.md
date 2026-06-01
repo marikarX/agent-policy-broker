@@ -91,7 +91,7 @@ Planned capabilities:
 
 - `agent-policy index`;
 - local SQLite metadata index;
-- Tantivy BM25 index stored as `bm25.tantivy/`;
+- Tantivy full-text index stored as `fulltext/`;
 - index manifest with registry commit;
 - local index over policy files, nested instruction files, and selected documentation;
 - stale-index detection;

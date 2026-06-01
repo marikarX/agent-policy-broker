@@ -16,9 +16,7 @@ pub(crate) fn json_escape(value: &str) -> String {
 }
 
 pub(crate) fn markdown_inline(text: &str) -> String {
-    text.replace('`', "\\`")
-        .replace('\n', " ")
-        .replace('\r', " ")
+    text.replace('`', "\\`").replace(['\n', '\r'], " ")
 }
 
 pub(crate) fn instruction_source_type_name(source_type: &InstructionSourceType) -> &'static str {

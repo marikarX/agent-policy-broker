@@ -4,9 +4,9 @@ Agent Policy Broker is designed to be local-first and privacy-conscious by defau
 
 This document describes the intended privacy posture for the open-source project. It is not a commercial privacy policy for a hosted service.
 
-## Current project status
+## Current Project Status
 
-The repository is currently in the documentation and design phase. There is no implemented hosted service in this repository at this time.
+The repository currently contains a local Rust CLI and localhost service prototype. There is no hosted service implementation in this repository.
 
 ## Local-first expectation
 
@@ -18,7 +18,7 @@ A local invocation such as:
 agent-policy get --repo . --task "fix refund retry handling"
 ```
 
-should use local configuration and local policy files unless the user explicitly configures a remote endpoint.
+uses local configuration and local policy files. A configured Git registry is loaded from a local filesystem path or already-cloned cache; remote registry fetch is not implemented in the MVP.
 
 ## Data the CLI may process locally
 
@@ -36,16 +36,16 @@ A local broker implementation may inspect local repository metadata such as:
 
 The CLI should avoid reading full source files unless a feature explicitly requires it and the behavior is documented.
 
-## Local retrieval indexes
+## Local Retrieval Indexes
 
-A future local retrieval index may store embeddings or searchable representations of policy files and selected documentation.
+The MVP can build local metadata and full-text indexes under the user cache directory, usually `~/.cache/agent-policy/indexes`. The index is built from local policy files, discovered Markdown instruction files, and documentation paths explicitly listed in `index.include`.
 
 Local indexing should follow these rules:
 
 - indexing should be explicit;
 - indexed paths should be configurable;
 - source code should not be indexed by default;
-- local vector prototypes should use deterministic local embeddings unless an explicitly configured future backend documents otherwise;
+- vector indexing is disabled by default and is not part of the MVP CLI indexing path;
 - generated index files should remain local unless the user explicitly moves or uploads them;
 - users should be able to delete and rebuild the index;
 - documentation should clearly explain what is indexed.
@@ -64,7 +64,7 @@ The open-source core should not collect or transmit by default:
 
 ## Remote service behavior
 
-If a future implementation supports a remote policy service, remote behavior must be explicit and documented.
+If a future implementation supports a remote policy service or remote registry fetch, remote behavior must be explicit and documented.
 
 Remote mode should clearly disclose:
 

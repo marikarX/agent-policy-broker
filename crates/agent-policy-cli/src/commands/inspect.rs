@@ -147,7 +147,7 @@ pub(crate) fn inspect_repo(repo: &Path, discovered: DiscoveryResult) -> Inspecti
     let instruction_sources = discovered
         .instruction_sources
         .iter()
-        .map(|source| inspection_source(source))
+        .map(inspection_source)
         .collect::<Vec<_>>();
     let duplicates = detect_inspection_duplicates(&candidate_instructions);
     let conflicts = detect_inspection_conflicts(&candidate_instructions);
@@ -1358,9 +1358,7 @@ pub(crate) fn render_migration_dry_run_markdown(report: &MigrationDryRunReport) 
 }
 
 fn markdown_inline(text: &str) -> String {
-    text.replace('`', "\\`")
-        .replace('\n', " ")
-        .replace('\r', " ")
+    text.replace('`', "\\`").replace(['\n', '\r'], " ")
 }
 
 fn render_duplicate_section(out: &mut String, duplicates: &[InspectionDuplicate]) {
