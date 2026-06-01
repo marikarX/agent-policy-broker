@@ -274,6 +274,8 @@ pub fn build_instruction_bundle(
     let mut seen_required_checks: BTreeSet<String> = BTreeSet::new();
     let mut seen_blocked_actions: BTreeSet<BlockedAction> = BTreeSet::new();
     let mut omitted = 0usize;
+    let mut omitted_required_checks = 0usize;
+    let mut omitted_blocked_actions = 0usize;
 
     for matched_policy in &matched {
         let policy = &matched_policy.loaded.policy;
@@ -307,6 +309,7 @@ pub fn build_instruction_bundle(
                 continue;
             }
             if required_check_limit.is_some_and(|limit| required_checks.len() >= limit) {
+                omitted_required_checks += 1;
                 continue;
             }
 
@@ -325,6 +328,7 @@ pub fn build_instruction_bundle(
                 continue;
             }
             if blocked_action_limit.is_some_and(|limit| blocked_actions.len() >= limit) {
+                omitted_blocked_actions += 1;
                 continue;
             }
             push_unique(&mut sources, source.clone());
@@ -335,6 +339,13 @@ pub fn build_instruction_bundle(
         if !included_policy_content {
             omitted += 1;
         }
+    }
+
+    if omitted_required_checks > 0 || omitted_blocked_actions > 0 {
+        bail!(
+            "context budget would omit {omitted_required_checks} required check(s) and \
+             {omitted_blocked_actions} blocked action(s); failing closed"
+        );
     }
 
     let estimated_tokens =
@@ -1374,6 +1385,33 @@ mod tests {
             bundle.context_budget.reason.as_deref(),
             Some("Lower priority or duplicate non-mandatory guidance excluded by context budget.")
         );
+    }
+
+    #[test]
+    fn budget_fails_closed_before_omitting_required_checks_or_blocked_actions() {
+        let mut policy = test_policy(
+            "policy.mandatory",
+            AppliesWhen::default(),
+            "Use mandatory guidance.",
+        );
+        policy.policy.required_checks = vec!["cargo test".into()];
+        policy.policy.blocked_actions = vec![BlockedAction("Do not commit secrets.".into())];
+
+        let error = build_instruction_bundle(
+            &test_intent(Vec::new()),
+            &[policy],
+            BundleBuildOptions {
+                max_tokens: Some(900),
+                max_instructions: Some(8),
+                max_required_checks: Some(0),
+                max_blocked_actions: Some(0),
+            },
+        )
+        .expect_err("mandatory controls should fail closed when budgeted out");
+
+        assert!(error
+            .to_string()
+            .contains("context budget would omit 1 required check(s) and 1 blocked action(s)"));
     }
 
     #[test]

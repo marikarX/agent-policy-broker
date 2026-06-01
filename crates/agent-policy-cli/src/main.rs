@@ -2,7 +2,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use agent_policy_config::{load_config, load_config_from_path};
+use agent_policy_config::{load_config, load_config_from_path, OutputBudgetConfig};
 use agent_policy_core::{
     build_instruction_bundle, load_policies_from_dirs, render_bundle_json, render_bundle_markdown,
     BundleBuildOptions, DetectedContext, OutputBudget, TaskDetails, TaskIntent, TaskType,
@@ -124,19 +124,18 @@ fn run_get(global: &GlobalArgs, args: GetArgs) -> anyhow::Result<()> {
         None => load_config(repo)?,
     };
 
+    let budget = effective_output_budget(&config.output_budget, global.config.is_some());
     let policies = load_policies_from_dirs(repo, &config.local_policies)?;
     let _discovered_sources = discover(repo)?;
-    let intent = build_task_intent(repo, &config, &args);
+    let intent = build_task_intent(repo, &budget, &args);
     let bundle = build_instruction_bundle(
         &intent,
         &policies,
         BundleBuildOptions {
-            max_tokens: args.max_tokens.or(Some(config.output_budget.max_tokens)),
-            max_instructions: args
-                .max_instructions
-                .or(Some(config.output_budget.max_instructions)),
-            max_required_checks: Some(config.output_budget.max_required_checks),
-            max_blocked_actions: Some(config.output_budget.max_blocked_actions),
+            max_tokens: args.max_tokens.or(Some(budget.max_tokens)),
+            max_instructions: args.max_instructions.or(Some(budget.max_instructions)),
+            max_required_checks: Some(budget.max_required_checks),
+            max_blocked_actions: Some(budget.max_blocked_actions),
         },
     )?;
 
@@ -154,7 +153,7 @@ fn run_get(global: &GlobalArgs, args: GetArgs) -> anyhow::Result<()> {
 
 fn build_task_intent(
     repo: &std::path::Path,
-    config: &agent_policy_config::AgentPolicyConfig,
+    budget: &OutputBudgetConfig,
     args: &GetArgs,
 ) -> TaskIntent {
     TaskIntent {
@@ -173,15 +172,32 @@ fn build_task_intent(
         expected_commands: Vec::new(),
         expected_check_ids: Vec::new(),
         output_budget: Some(OutputBudget {
-            max_tokens: args.max_tokens.or(Some(config.output_budget.max_tokens)),
-            max_instructions: args
-                .max_instructions
-                .or(Some(config.output_budget.max_instructions)),
-            max_required_checks: Some(config.output_budget.max_required_checks),
-            max_blocked_actions: Some(config.output_budget.max_blocked_actions),
-            include_examples: Some(config.output_budget.include_examples),
-            include_explanations: Some(config.output_budget.include_explanations.clone()),
+            max_tokens: args.max_tokens.or(Some(budget.max_tokens)),
+            max_instructions: args.max_instructions.or(Some(budget.max_instructions)),
+            max_required_checks: Some(budget.max_required_checks),
+            max_blocked_actions: Some(budget.max_blocked_actions),
+            include_examples: Some(budget.include_examples),
+            include_explanations: Some(budget.include_explanations.clone()),
         }),
+    }
+}
+
+fn effective_output_budget(
+    budget: &OutputBudgetConfig,
+    explicit_config: bool,
+) -> OutputBudgetConfig {
+    if explicit_config {
+        return budget.clone();
+    }
+
+    let defaults = OutputBudgetConfig::default();
+    OutputBudgetConfig {
+        max_tokens: budget.max_tokens.max(defaults.max_tokens),
+        max_instructions: budget.max_instructions.max(defaults.max_instructions),
+        max_required_checks: budget.max_required_checks.max(defaults.max_required_checks),
+        max_blocked_actions: budget.max_blocked_actions.max(defaults.max_blocked_actions),
+        include_examples: budget.include_examples,
+        include_explanations: budget.include_explanations.clone(),
     }
 }
 
@@ -245,7 +261,10 @@ fn not_implemented(command_name: &str) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Commands, GlobalArgs, OutputFormat, RegistryCommands};
+    use super::{
+        effective_output_budget, Cli, Commands, GlobalArgs, OutputBudgetConfig, OutputFormat,
+        RegistryCommands,
+    };
     use clap::{error::ErrorKind, CommandFactory, Parser};
     use std::path::PathBuf;
 
@@ -307,6 +326,51 @@ mod tests {
             }
             _ => panic!("expected get command"),
         }
+    }
+
+    #[test]
+    fn repository_output_budget_is_clamped_to_safe_defaults() {
+        let malicious_budget = OutputBudgetConfig {
+            max_tokens: 1,
+            max_instructions: 0,
+            max_required_checks: 0,
+            max_blocked_actions: 0,
+            include_examples: false,
+            include_explanations: "compact".into(),
+        };
+
+        let budget = effective_output_budget(&malicious_budget, false);
+
+        assert_eq!(budget.max_tokens, OutputBudgetConfig::default().max_tokens);
+        assert_eq!(
+            budget.max_instructions,
+            OutputBudgetConfig::default().max_instructions
+        );
+        assert_eq!(
+            budget.max_required_checks,
+            OutputBudgetConfig::default().max_required_checks
+        );
+        assert_eq!(
+            budget.max_blocked_actions,
+            OutputBudgetConfig::default().max_blocked_actions
+        );
+    }
+
+    #[test]
+    fn explicit_config_output_budget_is_treated_as_operator_controlled() {
+        let operator_budget = OutputBudgetConfig {
+            max_tokens: 1,
+            max_instructions: 0,
+            max_required_checks: 0,
+            max_blocked_actions: 0,
+            include_examples: false,
+            include_explanations: "compact".into(),
+        };
+
+        assert_eq!(
+            effective_output_budget(&operator_budget, true),
+            operator_budget
+        );
     }
 
     #[test]
