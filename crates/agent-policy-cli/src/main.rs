@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use globset::Glob;
 use std::collections::BTreeMap;
 use std::fs;
 use std::fs::OpenOptions;
@@ -2573,6 +2574,7 @@ fn run_get(global: &GlobalArgs, args: GetArgs) -> anyhow::Result<()> {
         repo,
         &discovered_sources,
         &intent.files,
+        &config.instruction_sources.trusted,
     ));
     let mut bundle = build_instruction_bundle(
         &intent,
@@ -2767,10 +2769,14 @@ fn markdown_candidate_policies(
     repo: &Path,
     discovered: &DiscoveryResult,
     task_files: &[String],
+    trusted_sources: &[String],
 ) -> Vec<LoadedPolicy> {
     let mut policies = Vec::new();
 
     for source in &discovered.instruction_sources {
+        if !instruction_source_is_trusted(repo, source, trusted_sources) {
+            continue;
+        }
         if !scope_matches_task_files(&source.scope, task_files) {
             continue;
         }
@@ -2814,6 +2820,70 @@ fn markdown_candidate_policies(
     }
 
     policies
+}
+
+fn instruction_source_is_trusted(
+    repo: &Path,
+    source: &InstructionSource,
+    trusted_sources: &[String],
+) -> bool {
+    if trusted_sources.is_empty() {
+        return false;
+    }
+
+    let relative_path = normalize_match_path(&source.path);
+    let repo_path = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
+    let absolute_path = normalize_match_path(&repo_path.join(&source.path));
+
+    trusted_sources.iter().any(|trusted_source| {
+        trusted_source_matches(trusted_source, &relative_path, &absolute_path)
+    })
+}
+
+fn trusted_source_matches(trusted_source: &str, relative_path: &str, absolute_path: &str) -> bool {
+    let trusted_source = trusted_source.trim();
+    if trusted_source.is_empty() {
+        return false;
+    }
+
+    let trusted_path = Path::new(trusted_source);
+    if trusted_path.is_absolute() {
+        let trusted_path = if contains_glob_pattern(trusted_source) {
+            trusted_path.to_path_buf()
+        } else {
+            trusted_path
+                .canonicalize()
+                .unwrap_or_else(|_| trusted_path.to_path_buf())
+        };
+        let trusted_path = normalize_match_path(&trusted_path);
+        trusted_path_matches(&trusted_path, absolute_path)
+    } else {
+        let trusted_path = normalize_task_file(trusted_source);
+        trusted_path_matches(&trusted_path, relative_path)
+    }
+}
+
+fn trusted_path_matches(trusted_path: &str, candidate_path: &str) -> bool {
+    if trusted_path == "." {
+        return true;
+    }
+
+    if contains_glob_pattern(trusted_path) {
+        return Glob::new(trusted_path)
+            .map(|glob| glob.compile_matcher().is_match(candidate_path))
+            .unwrap_or(false);
+    }
+
+    let trusted_path = trusted_path.trim_end_matches('/');
+    candidate_path == trusted_path || candidate_path.starts_with(&format!("{trusted_path}/"))
+}
+
+fn contains_glob_pattern(path: &str) -> bool {
+    path.contains('*') || path.contains('?') || path.contains('[') || path.contains('{')
+}
+
+fn normalize_match_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn scope_matches_task_files(scope: &str, task_files: &[String]) -> bool {
@@ -3987,7 +4057,7 @@ instructions:
         let repo = fixture_repo("nested-instructions");
         let discovered = discover(&repo).expect("discover fixture repo");
         let files = vec!["backend/payments/src/refunds.ts".to_string()];
-        let policies = markdown_candidate_policies(&repo, &discovered, &files);
+        let policies = markdown_candidate_policies(&repo, &discovered, &files, &[".".into()]);
         let bundle = build_instruction_bundle(
             &TaskIntent {
                 repo: Some("nested-instructions".into()),
@@ -4041,7 +4111,7 @@ instructions:
         let repo = fixture_repo("nested-instructions");
         let discovered = discover(&repo).expect("discover fixture repo");
         let files = vec!["frontend/src/App.tsx".to_string()];
-        let policies = markdown_candidate_policies(&repo, &discovered, &files);
+        let policies = markdown_candidate_policies(&repo, &discovered, &files, &[".".into()]);
         let bundle = build_instruction_bundle(
             &TaskIntent {
                 repo: Some("nested-instructions".into()),
@@ -4072,6 +4142,66 @@ instructions:
         assert!(instruction_texts.contains(&"Prefer accessible controls."));
         assert!(!instruction_texts.contains(&"Backend changes require service-level tests."));
         assert!(!instruction_texts.contains(&"Preserve payment invariants."));
+    }
+
+    #[test]
+    fn untrusted_markdown_candidates_are_not_added_to_get_bundle() {
+        let repo = fixture_repo("nested-instructions");
+        let discovered = discover(&repo).expect("discover fixture repo");
+        let files = vec!["backend/payments/src/refunds.ts".to_string()];
+        let policies = markdown_candidate_policies(&repo, &discovered, &files, &[]);
+
+        assert!(policies.is_empty());
+    }
+
+    #[test]
+    fn markdown_candidate_policies_require_trusted_sources() {
+        let repo = fixture_repo("nested-instructions");
+        let discovered = discover(&repo).expect("discover fixture repo");
+        let files = vec!["backend/payments/src/refunds.ts".to_string()];
+
+        let policies = markdown_candidate_policies(
+            &repo,
+            &discovered,
+            &files,
+            &["backend/payments/AGENTS.md".into()],
+        );
+
+        assert!(policies.iter().all(|policy| policy
+            .source_ref
+            .as_ref()
+            .is_some_and(|source| source.0.contains("markdown:backend/payments/AGENTS.md"))));
+        assert!(policies.iter().any(|policy| policy
+            .policy
+            .instructions
+            .contains(&"Preserve payment invariants.".to_string())));
+    }
+
+    #[test]
+    fn instruction_source_trust_matches_relative_and_absolute_paths() {
+        let repo = fixture_repo("nested-instructions");
+        let discovered = discover(&repo).expect("discover fixture repo");
+        let payment_source = discovered
+            .instruction_sources
+            .iter()
+            .find(|source| source.path == "backend/payments/AGENTS.md")
+            .expect("payment source");
+
+        assert!(instruction_source_is_trusted(
+            &repo,
+            payment_source,
+            &["backend/payments".into()]
+        ));
+        assert!(instruction_source_is_trusted(
+            &repo,
+            payment_source,
+            &[repo.join("backend/payments").to_string_lossy().into_owned()]
+        ));
+        assert!(!instruction_source_is_trusted(
+            &repo,
+            payment_source,
+            &["backend/AGENTS.md".into()]
+        ));
     }
 
     #[test]
