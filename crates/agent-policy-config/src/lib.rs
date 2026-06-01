@@ -4,6 +4,7 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_yaml::{Mapping, Value};
 
 pub const REPO_CONFIG_FILE_NAME: &str = ".agent-policy.yaml";
 
@@ -177,6 +178,238 @@ pub fn load_config_from_path(path: impl AsRef<Path>) -> Result<AgentPolicyConfig
         explicit_file,
         ..ConfigPrecedenceLayers::default()
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigValidationResult {
+    pub config_checked: bool,
+    pub local_policies: Vec<String>,
+    pub errors: Vec<ConfigValidationIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigValidationIssue {
+    pub code: &'static str,
+    pub message: String,
+    pub path: Option<String>,
+    pub field: Option<String>,
+}
+
+pub fn validate_config_file(path: impl AsRef<Path>) -> ConfigValidationResult {
+    let path = path.as_ref();
+    if !path.exists() {
+        return ConfigValidationResult {
+            config_checked: false,
+            local_policies: AgentPolicyConfig::default().local_policies,
+            errors: Vec::new(),
+        };
+    }
+
+    let mut errors = Vec::new();
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) => {
+            push_config_error(
+                &mut errors,
+                "config_read_error",
+                format!("Failed to read config file: {error}"),
+                Some(path),
+                None,
+            );
+            return ConfigValidationResult {
+                config_checked: true,
+                local_policies: AgentPolicyConfig::default().local_policies,
+                errors,
+            };
+        }
+    };
+
+    let value = match serde_yaml::from_str::<Value>(&raw) {
+        Ok(value) => value,
+        Err(error) => {
+            push_config_error(
+                &mut errors,
+                "config_parse_error",
+                format!("Failed to parse config YAML: {error}"),
+                Some(path),
+                None,
+            );
+            return ConfigValidationResult {
+                config_checked: true,
+                local_policies: AgentPolicyConfig::default().local_policies,
+                errors,
+            };
+        }
+    };
+
+    let Some(root) = value.as_mapping() else {
+        push_config_error(
+            &mut errors,
+            "config_invalid_root",
+            "Config must be a YAML mapping.".to_string(),
+            Some(path),
+            None,
+        );
+        return ConfigValidationResult {
+            config_checked: true,
+            local_policies: AgentPolicyConfig::default().local_policies,
+            errors,
+        };
+    };
+
+    validate_config_registry(root, path, &mut errors);
+    validate_config_output_budget(root, path, &mut errors);
+
+    if let Err(error) = load_config_from_path(path) {
+        push_config_error(
+            &mut errors,
+            "config_schema_error",
+            format!("Config does not match the documented schema: {error:#}"),
+            Some(path),
+            None,
+        );
+    }
+
+    ConfigValidationResult {
+        config_checked: true,
+        local_policies: local_policy_dirs_from_config(root)
+            .unwrap_or_else(|| AgentPolicyConfig::default().local_policies),
+        errors,
+    }
+}
+
+fn validate_config_registry(root: &Mapping, path: &Path, errors: &mut Vec<ConfigValidationIssue>) {
+    let Some(registry) = mapping_get(root, "registry") else {
+        return;
+    };
+    let Some(registry) = registry.as_mapping() else {
+        push_config_error(
+            errors,
+            "config_registry_invalid",
+            "registry must be a mapping when configured.".to_string(),
+            Some(path),
+            Some("registry"),
+        );
+        return;
+    };
+
+    for field in ["type", "url", "ref", "cache_dir"] {
+        match mapping_get(registry, field).and_then(Value::as_str) {
+            Some(value) if !value.trim().is_empty() => {}
+            _ => push_config_error(
+                errors,
+                "config_registry_missing_field",
+                format!("registry.{field} is required when registry is configured."),
+                Some(path),
+                Some(&format!("registry.{field}")),
+            ),
+        }
+    }
+
+    if let Some(sync) = mapping_get(registry, "sync").and_then(Value::as_mapping) {
+        if let Some(mode) = mapping_get(sync, "mode") {
+            match mode.as_str() {
+                Some("manual" | "auto" | "pinned" | "offline") => {}
+                Some(value) => push_config_error(
+                    errors,
+                    "config_invalid_sync_mode",
+                    format!(
+                        "registry.sync.mode `{value}` is invalid; expected manual, auto, pinned, or offline."
+                    ),
+                    Some(path),
+                    Some("registry.sync.mode"),
+                ),
+                None => push_config_error(
+                    errors,
+                    "config_invalid_sync_mode",
+                    "registry.sync.mode must be a string.".to_string(),
+                    Some(path),
+                    Some("registry.sync.mode"),
+                ),
+            }
+        }
+    }
+}
+
+fn validate_config_output_budget(
+    root: &Mapping,
+    path: &Path,
+    errors: &mut Vec<ConfigValidationIssue>,
+) {
+    let Some(output_budget) = mapping_get(root, "output_budget") else {
+        return;
+    };
+    let Some(output_budget) = output_budget.as_mapping() else {
+        push_config_error(
+            errors,
+            "config_output_budget_invalid",
+            "output_budget must be a mapping.".to_string(),
+            Some(path),
+            Some("output_budget"),
+        );
+        return;
+    };
+
+    for field in [
+        "max_tokens",
+        "max_instructions",
+        "max_required_checks",
+        "max_blocked_actions",
+    ] {
+        if let Some(value) = mapping_get(output_budget, field) {
+            match value.as_i64() {
+                Some(number) if number > 0 => {}
+                Some(_) => push_config_error(
+                    errors,
+                    "config_invalid_output_budget",
+                    format!("output_budget.{field} must be greater than zero."),
+                    Some(path),
+                    Some(&format!("output_budget.{field}")),
+                ),
+                None => push_config_error(
+                    errors,
+                    "config_invalid_output_budget",
+                    format!("output_budget.{field} must be an integer."),
+                    Some(path),
+                    Some(&format!("output_budget.{field}")),
+                ),
+            }
+        }
+    }
+}
+
+fn local_policy_dirs_from_config(root: &Mapping) -> Option<Vec<String>> {
+    let local_policies = mapping_get(root, "local_policies")?.as_sequence()?;
+    let dirs = local_policies
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+    if dirs.is_empty() {
+        None
+    } else {
+        Some(dirs)
+    }
+}
+
+fn mapping_get<'a>(mapping: &'a Mapping, key: &str) -> Option<&'a Value> {
+    mapping.get(Value::String(key.to_string()))
+}
+
+fn push_config_error(
+    errors: &mut Vec<ConfigValidationIssue>,
+    code: &'static str,
+    message: String,
+    path: Option<&Path>,
+    field: Option<&str>,
+) {
+    errors.push(ConfigValidationIssue {
+        code,
+        message,
+        path: path.map(|path| path.display().to_string()),
+        field: field.map(str::to_string),
+    });
 }
 
 fn read_config_patch(path: &Path) -> Result<AgentPolicyConfigPatch> {

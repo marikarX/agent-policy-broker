@@ -10,6 +10,7 @@ use anyhow::{bail, Context, Result};
 use globset::{Glob, GlobSetBuilder};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
+use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use walkdir::WalkDir;
 
 pub fn version() -> &'static str {
@@ -975,6 +976,332 @@ where
             })
         })
         .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicyValidationSeverity {
+    Error,
+    Warning,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyValidationIssue {
+    pub severity: PolicyValidationSeverity,
+    pub code: &'static str,
+    pub message: String,
+    pub path: Option<String>,
+    pub field: Option<String>,
+}
+
+pub fn collect_policy_files<I, P>(
+    repo_root: impl AsRef<Path>,
+    policy_dirs: I,
+) -> (Vec<PathBuf>, Vec<PolicyValidationIssue>)
+where
+    I: IntoIterator<Item = P>,
+    P: AsRef<Path>,
+{
+    let repo_root = repo_root.as_ref();
+    let mut policy_files = Vec::new();
+    let mut issues = Vec::new();
+
+    for policy_dir in policy_dirs {
+        let policy_dir = resolve_policy_dir(repo_root, policy_dir.as_ref());
+
+        if !policy_dir.exists() {
+            continue;
+        }
+
+        if !policy_dir.is_dir() {
+            push_policy_issue(
+                &mut issues,
+                PolicyValidationSeverity::Error,
+                "policy_dir_invalid",
+                "Configured local policy path is not a directory.".to_string(),
+                Some(&policy_dir),
+                None,
+            );
+            continue;
+        }
+
+        for entry in WalkDir::new(&policy_dir) {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    push_policy_issue(
+                        &mut issues,
+                        PolicyValidationSeverity::Error,
+                        "policy_dir_read_error",
+                        format!(
+                            "Failed to walk policy directory {}: {error}",
+                            policy_dir.display()
+                        ),
+                        Some(&policy_dir),
+                        None,
+                    );
+                    continue;
+                }
+            };
+
+            if entry.file_type().is_file() && is_policy_file(entry.path()) {
+                policy_files.push(entry.into_path());
+            }
+        }
+    }
+
+    policy_files.sort();
+    (policy_files, issues)
+}
+
+pub fn validate_policy_files(policy_files: &[PathBuf]) -> Vec<PolicyValidationIssue> {
+    let mut issues = Vec::new();
+    let mut seen_ids: BTreeMap<String, PathBuf> = BTreeMap::new();
+
+    for policy_file in policy_files {
+        let raw = match fs::read_to_string(policy_file) {
+            Ok(raw) => raw,
+            Err(error) => {
+                push_policy_issue(
+                    &mut issues,
+                    PolicyValidationSeverity::Error,
+                    "policy_read_error",
+                    format!("Failed to read policy file: {error}"),
+                    Some(policy_file),
+                    None,
+                );
+                continue;
+            }
+        };
+        let value = match serde_yaml::from_str::<YamlValue>(&raw) {
+            Ok(value) => value,
+            Err(error) => {
+                push_policy_issue(
+                    &mut issues,
+                    PolicyValidationSeverity::Error,
+                    "policy_parse_error",
+                    format!("Failed to parse policy YAML: {error}"),
+                    Some(policy_file),
+                    None,
+                );
+                continue;
+            }
+        };
+
+        let Some(root) = value.as_mapping() else {
+            push_policy_issue(
+                &mut issues,
+                PolicyValidationSeverity::Error,
+                "policy_invalid_root",
+                "Policy must be a YAML mapping.".to_string(),
+                Some(policy_file),
+                None,
+            );
+            continue;
+        };
+
+        validate_policy_value(root, policy_file, &mut seen_ids, &mut issues);
+
+        if let Err(error) = serde_yaml::from_str::<Policy>(&raw) {
+            push_policy_issue(
+                &mut issues,
+                PolicyValidationSeverity::Error,
+                "policy_schema_error",
+                format!("Policy does not match the documented schema: {error}"),
+                Some(policy_file),
+                None,
+            );
+        }
+    }
+
+    issues
+}
+
+fn validate_policy_value(
+    root: &YamlMapping,
+    policy_file: &Path,
+    seen_ids: &mut BTreeMap<String, PathBuf>,
+    issues: &mut Vec<PolicyValidationIssue>,
+) {
+    let id = match yaml_mapping_get(root, "id").and_then(YamlValue::as_str) {
+        Some(id) if !id.trim().is_empty() => Some(id.trim().to_string()),
+        _ => {
+            push_policy_issue(
+                issues,
+                PolicyValidationSeverity::Error,
+                "policy_missing_id",
+                "Policy id is required and must be a non-empty string.".to_string(),
+                Some(policy_file),
+                Some("id"),
+            );
+            None
+        }
+    };
+
+    if let Some(id) = &id {
+        if let Some(first_path) = seen_ids.insert(id.clone(), policy_file.to_path_buf()) {
+            push_policy_issue(
+                issues,
+                PolicyValidationSeverity::Error,
+                "policy_duplicate_id",
+                format!(
+                    "Policy id `{id}` duplicates an id already defined in {}.",
+                    first_path.display()
+                ),
+                Some(policy_file),
+                Some("id"),
+            );
+        }
+    }
+
+    if !root.contains_key(YamlValue::String("version".to_string())) {
+        push_policy_issue(
+            issues,
+            PolicyValidationSeverity::Error,
+            "policy_missing_version",
+            "Policy version is required.".to_string(),
+            Some(policy_file),
+            Some("version"),
+        );
+    }
+
+    let active = match yaml_mapping_get(root, "status").and_then(YamlValue::as_str) {
+        Some("active") => true,
+        Some("draft" | "deprecated" | "disabled") => false,
+        Some(status) => {
+            push_policy_issue(
+                issues,
+                PolicyValidationSeverity::Error,
+                "policy_invalid_status",
+                format!(
+                    "Policy status `{status}` is invalid; expected active, draft, deprecated, or disabled."
+                ),
+                Some(policy_file),
+                Some("status"),
+            );
+            false
+        }
+        None => {
+            push_policy_issue(
+                issues,
+                PolicyValidationSeverity::Error,
+                "policy_invalid_status",
+                "Policy status is required and must be active, draft, deprecated, or disabled."
+                    .to_string(),
+                Some(policy_file),
+                Some("status"),
+            );
+            false
+        }
+    };
+
+    let instruction_values =
+        yaml_mapping_get(root, "instructions").and_then(YamlValue::as_sequence);
+    if active {
+        let has_non_empty_instruction = instruction_values.is_some_and(|instructions| {
+            instructions
+                .iter()
+                .filter_map(YamlValue::as_str)
+                .any(|instruction| !instruction.trim().is_empty())
+        });
+        if !has_non_empty_instruction {
+            push_policy_issue(
+                issues,
+                PolicyValidationSeverity::Error,
+                "policy_active_empty_instructions",
+                "Active policies must define at least one non-empty instruction.".to_string(),
+                Some(policy_file),
+                Some("instructions"),
+            );
+        }
+    }
+
+    if active && is_broad_policy_value(yaml_mapping_get(root, "applies_when")) {
+        push_policy_issue(
+            issues,
+            PolicyValidationSeverity::Warning,
+            "policy_broad_active",
+            "Active policy has no applies_when fields and will apply globally.".to_string(),
+            Some(policy_file),
+            Some("applies_when"),
+        );
+    }
+
+    if let Some(instructions) = instruction_values {
+        for (index, instruction) in instructions.iter().enumerate() {
+            if let Some(instruction) = instruction.as_str() {
+                if is_vague_instruction(instruction) {
+                    push_policy_issue(
+                        issues,
+                        PolicyValidationSeverity::Warning,
+                        "policy_vague_instruction",
+                        format!(
+                            "Instruction `{}` is too vague to be actionable.",
+                            instruction.trim()
+                        ),
+                        Some(policy_file),
+                        Some(&format!("instructions[{index}]")),
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn is_broad_policy_value(applies_when: Option<&YamlValue>) -> bool {
+    let Some(applies_when) = applies_when.and_then(YamlValue::as_mapping) else {
+        return true;
+    };
+
+    for field in [
+        "repos",
+        "paths",
+        "languages",
+        "frameworks",
+        "package_managers",
+        "task_types",
+        "risk_flags",
+    ] {
+        if yaml_mapping_get(applies_when, field)
+            .and_then(YamlValue::as_sequence)
+            .is_some_and(|values| !values.is_empty())
+        {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn is_vague_instruction(instruction: &str) -> bool {
+    let normalized = instruction
+        .trim()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "be careful" | "write clean code" | "make it good" | "use best practices"
+    )
+}
+
+fn yaml_mapping_get<'a>(mapping: &'a YamlMapping, key: &str) -> Option<&'a YamlValue> {
+    mapping.get(YamlValue::String(key.to_string()))
+}
+
+fn push_policy_issue(
+    issues: &mut Vec<PolicyValidationIssue>,
+    severity: PolicyValidationSeverity,
+    code: &'static str,
+    message: String,
+    path: Option<&Path>,
+    field: Option<&str>,
+) {
+    issues.push(PolicyValidationIssue {
+        severity,
+        code,
+        message,
+        path: path.map(|path| path.display().to_string()),
+        field: field.map(str::to_string),
+    });
 }
 
 fn resolve_policy_dir(repo_root: &Path, policy_dir: &Path) -> PathBuf {
