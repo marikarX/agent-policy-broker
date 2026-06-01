@@ -960,42 +960,26 @@ fn match_policy<'a>(
     let mut score = MatchScore::default();
 
     if !matches_task_type(applies, intent, &mut reasons, &mut score) {
-        return Ok(retrieval_policy_match(
-            intent,
-            loaded,
-            bm25_candidate_ids,
-            vector_candidate_ids,
-        ));
+        return Ok(None);
     }
     if !matches_risk_flags(applies, intent, &mut reasons, &mut score) {
-        return Ok(retrieval_policy_match(
-            intent,
-            loaded,
-            bm25_candidate_ids,
-            vector_candidate_ids,
-        ));
+        return Ok(None);
     }
     if !matches_paths(applies, intent, &mut reasons, &mut score)? {
-        return Ok(retrieval_policy_match(
-            intent,
-            loaded,
-            bm25_candidate_ids,
-            vector_candidate_ids,
-        ));
+        return Ok(None);
     }
     if !matches_detected(applies, intent, &mut reasons, &mut score) {
-        return Ok(retrieval_policy_match(
-            intent,
-            loaded,
-            bm25_candidate_ids,
-            vector_candidate_ids,
-        ));
+        return Ok(None);
     }
     if !matches_repo(applies, intent, &mut reasons, &mut score) {
         return Ok(None);
     }
 
     if reasons.is_empty() && !is_global_policy(applies) {
+        // Retrieval candidates are recall signals only after structured applicability
+        // filters have found no conflicts with the task intent. They must not
+        // override explicit task type, risk flag, path, language, framework, or
+        // package-manager mismatches.
         return Ok(retrieval_policy_match(
             intent,
             loaded,
@@ -2905,7 +2889,50 @@ No task summary provided.
     }
 
     #[test]
-    fn vector_candidates_are_guidance_only_and_do_not_override_priority_or_budget() {
+    fn bm25_candidates_apply_only_after_structured_filters_are_compatible() {
+        let policy = test_policy(
+            "policy.docs",
+            AppliesWhen {
+                paths: vec!["docs/**".into()],
+                ..AppliesWhen::default()
+            },
+            "Use documentation retrieval guidance.",
+        );
+        let bm25_candidate_ids = BTreeSet::from(["policy.docs".to_string()]);
+        let intent = TaskIntent {
+            repo: None,
+            branch: None,
+            task: None,
+            files: Vec::new(),
+            detected: None,
+            risk_flags: Vec::new(),
+            expected_commands: Vec::new(),
+            expected_check_ids: Vec::new(),
+            output_budget: None,
+        };
+
+        let bundle = build_instruction_bundle_with_bm25_candidates(
+            &intent,
+            &[policy],
+            default_build_options(),
+            &bm25_candidate_ids,
+        )
+        .expect("bundle should build");
+
+        assert_eq!(bundle.instructions.len(), 1);
+        assert_eq!(
+            bundle.instructions[0].text,
+            "Use documentation retrieval guidance."
+        );
+        assert_eq!(bundle.context_budget.exact_candidate_policies, Some(0));
+        assert_eq!(bundle.context_budget.bm25_candidate_policies, Some(1));
+        assert!(bundle.explanations[0]
+            .reason
+            .contains("BM25 keyword candidate"));
+    }
+
+    #[test]
+    fn vector_candidates_do_not_bypass_path_applicability() {
         let mut exact = test_policy(
             "policy.exact",
             AppliesWhen {
@@ -2946,7 +2973,7 @@ No task summary provided.
             "Use the exact payment workflow."
         );
         assert_eq!(bundle.context_budget.exact_candidate_policies, Some(1));
-        assert_eq!(bundle.context_budget.vector_candidate_policies, Some(1));
+        assert_eq!(bundle.context_budget.vector_candidate_policies, Some(0));
         assert!(bundle.explanations[0].reason.contains("Matched path"));
         assert!(!bundle
             .instructions

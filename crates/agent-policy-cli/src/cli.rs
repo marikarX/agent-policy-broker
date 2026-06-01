@@ -884,7 +884,7 @@ instructions:
     }
 
     #[test]
-    fn get_includes_keyword_only_bm25_policy_candidate() {
+    fn get_rejects_bm25_policy_candidate_when_paths_conflict() {
         let temp = TempDir::new("bm25-keyword-only");
         let repo = temp.path().join("repo");
         let policies_dir = repo.join(".agent-policy").join("policies");
@@ -953,15 +953,10 @@ instructions:
 
         assert!(warnings.is_empty());
         assert!(bm25_ids.contains("org.keyword.refunds"));
-        assert_eq!(
-            bundle.instructions[0].text,
-            "Preserve refund settlement reconciliation during retry changes."
-        );
+        assert!(bundle.instructions.is_empty());
+        assert!(bundle.explanations.is_empty());
         assert_eq!(bundle.context_budget.exact_candidate_policies, Some(0));
-        assert_eq!(bundle.context_budget.bm25_candidate_policies, Some(1));
-        assert!(bundle.explanations[0]
-            .reason
-            .contains("BM25 keyword candidate"));
+        assert_eq!(bundle.context_budget.bm25_candidate_policies, Some(0));
     }
 
     #[test]
@@ -1050,12 +1045,9 @@ instructions:
             bundle.instructions[0].text,
             "Follow the payment-specific change process."
         );
-        assert_eq!(
-            bundle.instructions[1].text,
-            "Generic refund settlement retry guidance is candidate-only context."
-        );
+        assert_eq!(bundle.instructions.len(), 1);
         assert_eq!(bundle.context_budget.exact_candidate_policies, Some(1));
-        assert_eq!(bundle.context_budget.bm25_candidate_policies, Some(1));
+        assert_eq!(bundle.context_budget.bm25_candidate_policies, Some(0));
     }
 
     #[test]
