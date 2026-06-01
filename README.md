@@ -179,6 +179,7 @@ The broker may return:
 - [Registry mode and WSL workflow](docs/registry-mode.md)
 - [Policy schema](docs/policy-schema.md)
 - [Agent integration](docs/agent-integration.md)
+- [GitHub Actions PR example](docs/github-action.md)
 - [Project scope](docs/project-scope.md)
 - [Threat model](docs/threat-model.md)
 - [Roadmap](docs/roadmap.md)
@@ -202,6 +203,7 @@ The broker may return:
 │   ├── configuration.md
 │   ├── conflict-resolution.md
 │   ├── context-budgeting.md
+│   ├── github-action.md
 │   ├── getting-started.md
 │   ├── implementation-stack.md
 │   ├── instruction-discovery.md
