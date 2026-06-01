@@ -22,21 +22,22 @@ The goal is to help coding agents follow engineering standards, security rules, 
 
 ## Status
 
-This repository is in the documentation and design phase. The current focus is defining the open-source core:
+This repository is in active early implementation. The open-source core now includes a Rust CLI and local service prototype for:
 
-- policy schema
-- CLI behavior
-- configuration model
-- Rust implementation stack
-- agent bootstrap patterns
-- layered instruction discovery for nested repo guidance
-- inspection and migration of existing repo instructions
-- hybrid retrieval and context budgeting
-- deterministic policy selection
-- instruction bundle compilation
-- registry mode for shared policy repositories
-- storage and indexing model for Git-backed policies and derived retrieval indexes
-- examples for common coding-agent workflows
+- policy schema and validation
+- local and registry-backed policy loading
+- configuration parsing
+- generic and Codex-compatible instruction discovery
+- Markdown instruction extraction from existing repo guidance
+- task-specific instruction bundle compilation
+- deterministic policy matching, conflict handling, and context budgeting
+- SQLite metadata indexes and Tantivy full-text retrieval
+- optional local vector-retrieval abstractions
+- repository inspection and migration draft generation
+- GitHub Actions PR reporting example
+- localhost service endpoints for repeated lookups and editor integrations
+
+The project is still pre-release. Interfaces, schemas, and command behavior may change while the MVP is hardened.
 
 ## Why this exists
 
