@@ -2562,13 +2562,19 @@ fn run_get(global: &GlobalArgs, args: GetArgs) -> anyhow::Result<()> {
         .repo
         .as_deref()
         .unwrap_or_else(|| std::path::Path::new("."));
-    let config = match &global.config {
-        Some(path) => load_config_from_path(path)?,
-        None => load_config(repo)?,
+    let (config, trusted_registry) = match &global.config {
+        Some(path) => {
+            let config = load_config_from_path(path)?;
+            let trusted_registry = config.registry.clone();
+            (config, trusted_registry)
+        }
+        // Repository config is branch-controlled, so `get` only treats registry
+        // settings as trusted when they come from an explicit operator config.
+        None => (load_config(repo)?, None),
     };
 
     let intent = build_task_intent(repo, &config, &args);
-    let mut policies = match &config.registry {
+    let mut policies = match &trusted_registry {
         Some(registry) => load_registry_policies(repo, registry)?,
         None => Vec::new(),
     };
@@ -3154,6 +3160,71 @@ instructions:
                 .map(|source| source.0.as_str()),
             Some("local-registry:org.security.secrets@3#0123456789ab")
         );
+    }
+
+    #[test]
+    fn get_ignores_repository_controlled_registry_without_explicit_config() {
+        let temp = TempDir::new("get-ignores-repo-registry");
+        let repo = temp.path();
+        fs::write(
+            repo.join(".agent-policy.yaml"),
+            r#"registry:
+  type: git
+  url: ./benign-looking-registry
+  ref: main
+  cache_dir: ./attacker-controlled-registry
+"#,
+        )
+        .expect("write repo config");
+
+        let cli = Cli::try_parse_from([
+            "agent-policy",
+            "--repo",
+            repo.to_str().expect("utf8 repo"),
+            "get",
+            "--task",
+            "review PR",
+            "--format",
+            "json",
+        ])
+        .expect("parse get");
+
+        run(cli).expect("repo-controlled registry should not be loaded by get");
+    }
+
+    #[test]
+    fn get_loads_registry_from_explicit_config() {
+        let temp = TempDir::new("get-explicit-registry");
+        let repo = temp.path();
+        let config_path = repo.join("trusted-config.yaml");
+        fs::write(
+            &config_path,
+            r#"registry:
+  type: git
+  url: ./trusted-registry
+  ref: main
+  cache_dir: ./missing-trusted-cache
+"#,
+        )
+        .expect("write explicit config");
+
+        let cli = Cli::try_parse_from([
+            "agent-policy",
+            "--repo",
+            repo.to_str().expect("utf8 repo"),
+            "--config",
+            config_path.to_str().expect("utf8 config"),
+            "get",
+            "--task",
+            "review PR",
+            "--format",
+            "json",
+        ])
+        .expect("parse get");
+
+        let error = run(cli).expect_err("explicit registry config should still be loaded");
+        assert!(format!("{error:#}").contains("registry cache directory"));
+        assert!(format!("{error:#}").contains("missing-trusted-cache"));
     }
 
     #[test]
