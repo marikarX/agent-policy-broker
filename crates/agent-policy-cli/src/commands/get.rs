@@ -9,10 +9,12 @@ use agent_policy_core::{
     PolicyStatus, PolicyVersion, RegistryLoadOptions, SourceRef, TaskDetails, TaskIntent, TaskType,
 };
 use agent_policy_discover::{
-    discover, DiscoveryResult, InstructionSourceType, MarkdownInstructionCandidateType,
+    discover, discover_codex, DiscoveryResult, InstructionSourceType,
+    MarkdownInstructionCandidateType,
 };
 
-use crate::cli::{GetArgs, GlobalArgs, OutputFormat};
+use crate::cli::{GetArgs, GlobalArgs, InstructionDiscoveryMode, OutputFormat};
+use crate::commands::discover::codex_options;
 use crate::indexing::{
     agent_policy_cache_dir, get_indexed_policy_ids, index_registry_source, index_repo_source,
     search_fulltext_candidates,
@@ -57,7 +59,10 @@ pub(crate) fn build_instruction_bundle_for_get(
     let loaded = load_get_policies(repo, &config)?;
     let mut policies = loaded.policies;
     let mut warnings = loaded.warnings;
-    let discovered_sources = discover(repo)?;
+    let discovered_sources = match args.instruction_mode {
+        InstructionDiscoveryMode::Generic => discover(repo)?,
+        InstructionDiscoveryMode::Codex => discover_codex(repo, codex_options(global, repo)?)?,
+    };
     policies.extend(markdown_candidate_policies(
         repo,
         &discovered_sources,

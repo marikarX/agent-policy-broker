@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
-use crate::cli::{GetArgs, GlobalArgs, ServeArgs};
+use crate::cli::{GetArgs, GlobalArgs, InstructionDiscoveryMode, ServeArgs};
 use crate::commands::get::build_instruction_bundle_for_get;
 use crate::commands::inspect::{inspect_repo, render_inspection_json};
 
@@ -102,6 +102,7 @@ async fn instructions(
         risk: request.risk,
         max_instructions: request.max_instructions,
         max_tokens: request.max_tokens,
+        instruction_mode: InstructionDiscoveryMode::Generic,
     };
     let bundle = build_instruction_bundle_for_get(&global, &args).map_err(ApiError::internal)?;
     let value = serde_json::from_str(&render_bundle_json(&bundle).map_err(ApiError::internal)?)
@@ -178,7 +179,7 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::app;
-    use crate::cli::{GetArgs, GlobalArgs};
+    use crate::cli::{GetArgs, GlobalArgs, InstructionDiscoveryMode};
     use crate::commands::get::build_instruction_bundle_for_get;
     use agent_policy_core::render_bundle_json;
     use axum::body::{to_bytes, Body};
@@ -252,6 +253,7 @@ mod tests {
             risk: vec!["payments".to_string()],
             max_instructions: Some(4),
             max_tokens: Some(600),
+            instruction_mode: InstructionDiscoveryMode::Generic,
         };
         let expected_bundle = build_instruction_bundle_for_get(&global(), &args).unwrap();
         let expected: Value =

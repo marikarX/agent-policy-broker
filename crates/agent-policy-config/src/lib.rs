@@ -18,6 +18,8 @@ pub struct AgentPolicyConfig {
     #[serde(default)]
     pub instruction_sources: InstructionSourcesConfig,
     #[serde(default)]
+    pub codex: CodexConfig,
+    #[serde(default)]
     pub index: IndexConfig,
     #[serde(default)]
     pub output_budget: OutputBudgetConfig,
@@ -65,6 +67,20 @@ pub struct InstructionSourcesConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+pub struct CodexConfig {
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub project_doc_fallback_filenames: Vec<String>,
+    pub project_doc_max_bytes: usize,
+    pub include_global: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct IndexConfig {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub include: Vec<String>,
@@ -104,6 +120,7 @@ impl Default for AgentPolicyConfig {
             registry: None,
             local_policies: vec![".agent-policy/policies".to_string()],
             instruction_sources: InstructionSourcesConfig::default(),
+            codex: CodexConfig::default(),
             index: IndexConfig::default(),
             output_budget: OutputBudgetConfig::default(),
         }
@@ -144,6 +161,19 @@ impl Default for InstructionSourcesConfig {
             ],
             exclude: vec!["node_modules/**".to_string(), "vendor/**".to_string()],
             trusted: Vec::new(),
+        }
+    }
+}
+
+impl Default for CodexConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            home: None,
+            current_dir: None,
+            project_doc_fallback_filenames: Vec::new(),
+            project_doc_max_bytes: 32_768,
+            include_global: false,
         }
     }
 }
@@ -491,6 +521,7 @@ struct AgentPolicyConfigPatch {
     registry: Option<RegistryConfigPatch>,
     local_policies: Option<Vec<String>>,
     instruction_sources: Option<InstructionSourcesConfigPatch>,
+    codex: Option<CodexConfigPatch>,
     index: Option<IndexConfigPatch>,
     output_budget: Option<OutputBudgetConfigPatch>,
 }
@@ -519,6 +550,17 @@ struct InstructionSourcesConfigPatch {
     include: Option<Vec<String>>,
     exclude: Option<Vec<String>>,
     trusted: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct CodexConfigPatch {
+    enabled: Option<bool>,
+    home: Option<String>,
+    current_dir: Option<String>,
+    project_doc_fallback_filenames: Option<Vec<String>>,
+    project_doc_max_bytes: Option<usize>,
+    include_global: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -566,6 +608,10 @@ impl AgentPolicyConfig {
         if let Some(instruction_sources_patch) = patch.instruction_sources {
             self.instruction_sources
                 .apply_patch(instruction_sources_patch);
+        }
+
+        if let Some(codex_patch) = patch.codex {
+            self.codex.apply_patch(codex_patch);
         }
 
         if let Some(index_patch) = patch.index {
@@ -656,6 +702,29 @@ impl InstructionSourcesConfig {
     }
 }
 
+impl CodexConfig {
+    fn apply_patch(&mut self, patch: CodexConfigPatch) {
+        if let Some(enabled) = patch.enabled {
+            self.enabled = enabled;
+        }
+        if let Some(home) = patch.home {
+            self.home = Some(home);
+        }
+        if let Some(current_dir) = patch.current_dir {
+            self.current_dir = Some(current_dir);
+        }
+        if let Some(project_doc_fallback_filenames) = patch.project_doc_fallback_filenames {
+            self.project_doc_fallback_filenames = project_doc_fallback_filenames;
+        }
+        if let Some(project_doc_max_bytes) = patch.project_doc_max_bytes {
+            self.project_doc_max_bytes = project_doc_max_bytes;
+        }
+        if let Some(include_global) = patch.include_global {
+            self.include_global = include_global;
+        }
+    }
+}
+
 impl IndexConfig {
     fn apply_patch(&mut self, patch: IndexConfigPatch) {
         if let Some(include) = patch.include {
@@ -719,6 +788,9 @@ mod tests {
         assert_eq!(cfg.index.vector.backend, VectorIndexBackend::SqliteVec);
         assert_eq!(cfg.output_budget.max_tokens, 900);
         assert!(!cfg.output_budget.include_examples);
+        assert!(!cfg.codex.enabled);
+        assert_eq!(cfg.codex.project_doc_max_bytes, 32_768);
+        assert!(!cfg.codex.include_global);
     }
 
     #[test]

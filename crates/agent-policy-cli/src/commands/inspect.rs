@@ -2,11 +2,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use agent_policy_discover::{
-    discover, DiscoveryResult, InstructionSource, InstructionSourceType,
+    discover, discover_codex, DiscoveryResult, InstructionSource, InstructionSourceType,
     MarkdownInstructionCandidate, MarkdownInstructionCandidateType,
 };
 
-use crate::cli::{GlobalArgs, OutputFormat};
+use crate::cli::{GlobalArgs, InspectArgs, InstructionDiscoveryMode, OutputFormat};
+use crate::commands::discover::codex_options;
 use crate::commands::get::normalize_scope_prefix;
 use crate::render::{instruction_source_type_name, json_escape, push_unique};
 
@@ -116,9 +117,12 @@ pub(crate) struct PolicyDraftProvenance {
     lines: Vec<usize>,
 }
 
-pub(crate) fn run(global: &GlobalArgs) -> anyhow::Result<()> {
+pub(crate) fn run(global: &GlobalArgs, args: InspectArgs) -> anyhow::Result<()> {
     let repo = global.repo.as_deref().unwrap_or_else(|| Path::new("."));
-    let discovered = discover(repo)?;
+    let discovered = match args.mode {
+        InstructionDiscoveryMode::Generic => discover(repo)?,
+        InstructionDiscoveryMode::Codex => discover_codex(repo, codex_options(global, repo)?)?,
+    };
     let report = inspect_repo(repo, discovered);
 
     match global.format.clone().unwrap_or(OutputFormat::Markdown) {

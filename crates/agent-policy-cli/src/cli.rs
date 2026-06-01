@@ -18,6 +18,12 @@ pub(crate) enum OutputFormat {
     Markdown,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub(crate) enum InstructionDiscoveryMode {
+    Generic,
+    Codex,
+}
+
 #[derive(Clone, Debug, Args)]
 pub(crate) struct GlobalArgs {
     #[arg(long, global = true, value_name = "path")]
@@ -39,11 +45,11 @@ pub(crate) enum Commands {
     /// Compile a task-specific instruction bundle.
     Get(GetArgs),
     /// Discover existing instruction sources in a repository.
-    Discover,
+    Discover(DiscoverArgs),
     /// Validate policies, config, and discovered instruction sources.
     Validate,
     /// Inspect repository guidance and produce an audit report.
-    Inspect,
+    Inspect(InspectArgs),
     /// Propose policy drafts from existing instruction sources.
     Migrate(MigrateArgs),
     /// Build or rebuild local retrieval indexes.
@@ -74,6 +80,20 @@ pub(crate) struct GetArgs {
     pub(crate) max_instructions: Option<u32>,
     #[arg(long, value_name = "number")]
     pub(crate) max_tokens: Option<u32>,
+    #[arg(long = "instruction-mode", value_enum, default_value_t = InstructionDiscoveryMode::Generic)]
+    pub(crate) instruction_mode: InstructionDiscoveryMode,
+}
+
+#[derive(Clone, Debug, Args)]
+pub(crate) struct DiscoverArgs {
+    #[arg(long, value_enum, default_value_t = InstructionDiscoveryMode::Generic)]
+    pub(crate) mode: InstructionDiscoveryMode,
+}
+
+#[derive(Clone, Debug, Args)]
+pub(crate) struct InspectArgs {
+    #[arg(long, value_enum, default_value_t = InstructionDiscoveryMode::Generic)]
+    pub(crate) mode: InstructionDiscoveryMode,
 }
 
 #[derive(Debug, Args)]
@@ -100,10 +120,10 @@ pub(crate) enum RegistryCommands {
 
 pub(crate) fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
-        Commands::Discover => discover::run(&cli.global),
+        Commands::Discover(args) => discover::run(&cli.global, args),
         Commands::Get(args) => get::run(&cli.global, args),
         Commands::Validate => validate::run(&cli.global),
-        Commands::Inspect => inspect::run(&cli.global),
+        Commands::Inspect(args) => inspect::run(&cli.global, args),
         Commands::Migrate(args) => migrate::run(&cli.global, args),
         Commands::Index => index::run(&cli.global),
         Commands::Serve(args) => serve::run(&cli.global, args),
@@ -148,8 +168,8 @@ mod tests {
         render_migration_dry_run_json, render_migration_dry_run_markdown,
         render_registry_sync_json, render_registry_sync_markdown, render_validation_markdown, run,
         scope_matches_task_files, search_fulltext_candidates, sync_registry, validate_repo, Cli,
-        Commands, GlobalArgs, IndexManifest, InspectionCandidate, MigrationClass, OutputFormat,
-        RegistryCommands, RegistrySyncStatus, ValidationStatus,
+        Commands, GlobalArgs, IndexManifest, InspectionCandidate, InstructionDiscoveryMode,
+        MigrationClass, OutputFormat, RegistryCommands, RegistrySyncStatus, ValidationStatus,
     };
     use agent_policy_config::{
         load_config, AgentPolicyConfig, RegistryConfig, RegistrySyncConfig, SyncMode,
@@ -257,7 +277,33 @@ instructions:
         let cli = Cli::try_parse_from(["agent-policy", "discover", "--format", "json"])
             .expect("parse discover");
         assert!(matches!(cli.global.format, Some(OutputFormat::Json)));
-        assert!(matches!(cli.command, Commands::Discover));
+        assert!(matches!(cli.command, Commands::Discover(_)));
+    }
+
+    #[test]
+    fn parse_codex_instruction_modes() {
+        let discover = Cli::try_parse_from(["agent-policy", "discover", "--mode", "codex"])
+            .expect("parse codex discover");
+        match discover.command {
+            Commands::Discover(args) => assert_eq!(args.mode, InstructionDiscoveryMode::Codex),
+            _ => panic!("expected discover command"),
+        }
+
+        let inspect = Cli::try_parse_from(["agent-policy", "inspect", "--mode", "codex"])
+            .expect("parse codex inspect");
+        match inspect.command {
+            Commands::Inspect(args) => assert_eq!(args.mode, InstructionDiscoveryMode::Codex),
+            _ => panic!("expected inspect command"),
+        }
+
+        let get = Cli::try_parse_from(["agent-policy", "get", "--instruction-mode", "codex"])
+            .expect("parse codex get");
+        match get.command {
+            Commands::Get(args) => {
+                assert_eq!(args.instruction_mode, InstructionDiscoveryMode::Codex)
+            }
+            _ => panic!("expected get command"),
+        }
     }
 
     #[test]
@@ -286,7 +332,7 @@ instructions:
         let cli = Cli::try_parse_from(["agent-policy", "inspect", "--format", "json"])
             .expect("parse inspect");
         assert!(matches!(cli.global.format, Some(OutputFormat::Json)));
-        assert!(matches!(cli.command, Commands::Inspect));
+        assert!(matches!(cli.command, Commands::Inspect(_)));
     }
 
     #[test]
