@@ -1,7 +1,7 @@
 //! Core data models for Agent Policy Broker.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -183,7 +183,7 @@ pub struct RequiredCheck {
     pub resolved: Option<bool>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct BlockedAction(pub String);
 
@@ -270,17 +270,26 @@ pub fn build_instruction_bundle(
     let mut blocked_actions: Vec<BlockedAction> = Vec::new();
     let mut sources: Vec<SourceRef> = Vec::new();
     let mut explanations: Vec<BundleExplanation> = Vec::new();
+    let mut seen_instructions: BTreeSet<String> = BTreeSet::new();
+    let mut seen_required_checks: BTreeSet<String> = BTreeSet::new();
+    let mut seen_blocked_actions: BTreeSet<BlockedAction> = BTreeSet::new();
+    let mut omitted = 0usize;
 
     for matched_policy in &matched {
         let policy = &matched_policy.loaded.policy;
         let source = policy_source_ref(policy);
-        push_unique(&mut sources, source.clone());
+        let mut included_policy_content = false;
 
         for instruction in &policy.instructions {
+            if !seen_instructions.insert(instruction.clone()) {
+                continue;
+            }
             if instruction_limit.is_some_and(|limit| instructions.len() >= limit) {
                 continue;
             }
 
+            push_unique(&mut sources, source.clone());
+            included_policy_content = true;
             instructions.push(BundleInstruction {
                 text: instruction.clone(),
                 priority: policy.priority.map(priority_label),
@@ -294,48 +303,42 @@ pub fn build_instruction_bundle(
         }
 
         for check in &policy.required_checks {
+            if !seen_required_checks.insert(check.clone()) {
+                continue;
+            }
             if required_check_limit.is_some_and(|limit| required_checks.len() >= limit) {
                 continue;
             }
 
+            push_unique(&mut sources, source.clone());
+            included_policy_content = true;
             let candidate = RequiredCheck {
                 id: check.clone(),
                 source: Some(source.clone()),
                 resolved: Some(false),
             };
-            if !required_checks
-                .iter()
-                .any(|existing| existing.id == candidate.id)
-            {
-                required_checks.push(candidate);
-            }
+            required_checks.push(candidate);
         }
 
         for action in &policy.blocked_actions {
+            if !seen_blocked_actions.insert(action.clone()) {
+                continue;
+            }
             if blocked_action_limit.is_some_and(|limit| blocked_actions.len() >= limit) {
                 continue;
             }
-            push_unique(&mut blocked_actions, action.clone());
+            push_unique(&mut sources, source.clone());
+            included_policy_content = true;
+            blocked_actions.push(action.clone());
+        }
+
+        if !included_policy_content {
+            omitted += 1;
         }
     }
 
     let estimated_tokens =
         estimate_bundle_tokens(&instructions, &required_checks, &blocked_actions, &sources);
-    let omitted = matched
-        .iter()
-        .filter(|matched_policy| {
-            !matched_policy
-                .loaded
-                .policy
-                .instructions
-                .iter()
-                .any(|text| {
-                    instructions
-                        .iter()
-                        .any(|instruction| &instruction.text == text)
-                })
-        })
-        .count();
 
     Ok(InstructionBundle {
         status: "ok".into(),
@@ -349,7 +352,10 @@ pub fn build_instruction_bundle(
             candidate_policies_considered: Some(candidate_count as u32),
             candidate_policies_omitted: Some(omitted as u32),
             reason: if omitted > 0 {
-                Some("Lower priority policy instructions excluded by context budget.".into())
+                Some(
+                    "Lower priority or duplicate non-mandatory guidance excluded by context budget."
+                        .into(),
+                )
             } else {
                 None
             },
@@ -1328,6 +1334,116 @@ mod tests {
 
         assert_eq!(bundle.instructions[0].text, "Payment domain guidance.");
         assert_eq!(bundle.instructions[1].text, "Broad source guidance.");
+    }
+
+    #[test]
+    fn budget_trims_instructions_and_reports_omitted_policies() {
+        let policies = vec![
+            test_policy(
+                "policy.high",
+                AppliesWhen::default(),
+                "Keep the highest priority guidance.",
+            ),
+            test_policy(
+                "policy.low",
+                AppliesWhen::default(),
+                "Omit lower priority guidance.",
+            ),
+        ];
+
+        let bundle = build_instruction_bundle(
+            &test_intent(Vec::new()),
+            &policies,
+            BundleBuildOptions {
+                max_tokens: Some(900),
+                max_instructions: Some(1),
+                max_required_checks: Some(4),
+                max_blocked_actions: Some(4),
+            },
+        )
+        .expect("bundle should build");
+
+        assert_eq!(bundle.instructions.len(), 1);
+        assert_eq!(
+            bundle.instructions[0].text,
+            "Keep the highest priority guidance."
+        );
+        assert_eq!(bundle.context_budget.candidate_policies_considered, Some(2));
+        assert_eq!(bundle.context_budget.candidate_policies_omitted, Some(1));
+        assert_eq!(
+            bundle.context_budget.reason.as_deref(),
+            Some("Lower priority or duplicate non-mandatory guidance excluded by context budget.")
+        );
+    }
+
+    #[test]
+    fn duplicate_instructions_checks_and_actions_are_removed_before_limits() {
+        let mut first = test_policy(
+            "policy.first",
+            AppliesWhen::default(),
+            "Use exact duplicate guidance.",
+        );
+        first.policy.required_checks = vec!["cargo test".into(), "cargo test".into()];
+        first.policy.blocked_actions = vec![
+            BlockedAction("Do not edit generated code.".into()),
+            BlockedAction("Do not edit generated code.".into()),
+        ];
+
+        let mut second = test_policy(
+            "policy.second",
+            AppliesWhen::default(),
+            "Use exact duplicate guidance.",
+        );
+        second.policy.instructions = vec![
+            "Use exact duplicate guidance.".into(),
+            "Keep unique guidance after duplicate.".into(),
+        ];
+        second.policy.required_checks = vec!["cargo test".into(), "cargo fmt --check".into()];
+        second.policy.blocked_actions = vec![
+            BlockedAction("Do not edit generated code.".into()),
+            BlockedAction("Do not commit secrets.".into()),
+        ];
+
+        let bundle = build_instruction_bundle(
+            &test_intent(Vec::new()),
+            &[first, second],
+            BundleBuildOptions {
+                max_tokens: Some(900),
+                max_instructions: Some(2),
+                max_required_checks: Some(2),
+                max_blocked_actions: Some(2),
+            },
+        )
+        .expect("bundle should build");
+
+        assert_eq!(
+            bundle
+                .instructions
+                .iter()
+                .map(|instruction| instruction.text.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Use exact duplicate guidance.",
+                "Keep unique guidance after duplicate.",
+            ]
+        );
+        assert_eq!(
+            bundle
+                .required_checks
+                .iter()
+                .map(|check| check.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["cargo test", "cargo fmt --check"]
+        );
+        assert_eq!(
+            bundle
+                .blocked_actions
+                .iter()
+                .map(|action| action.0.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Do not edit generated code.", "Do not commit secrets."]
+        );
+        assert_eq!(bundle.context_budget.candidate_policies_omitted, Some(0));
     }
 
     #[test]
