@@ -1,0 +1,12 @@
+id: org.security.secrets
+version: 3
+status: active
+owner: security
+priority: 100
+applies_when: {}
+instructions:
+  - Never commit secrets or production credentials.
+required_checks:
+  - security.secret_scan
+blocked_actions:
+  - Do not print secrets to logs.

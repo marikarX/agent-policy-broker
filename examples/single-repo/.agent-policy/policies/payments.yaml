@@ -1,0 +1,25 @@
+id: example.single-repo.payments
+version: 1
+status: active
+owner: example-payments
+priority: 90
+applies_when:
+  paths:
+    - src/payments/**
+    - tests/payments/**
+  languages:
+    - typescript
+  task_types:
+    - fix_bug
+    - add_feature
+    - test
+  risk_flags:
+    - payments
+instructions:
+  - Preserve refund idempotency when retrying provider calls.
+  - Keep money values as integer cents in this example.
+  - Update the matching test when refund behavior changes.
+required_checks:
+  - single-repo.payments.tests
+blocked_actions:
+  - Do not add provider credentials to the repository.

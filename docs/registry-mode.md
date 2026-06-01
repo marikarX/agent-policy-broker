@@ -1,13 +1,13 @@
 # Registry mode and WSL workflow
 
-Agent Policy Broker should support two storage modes:
+Agent Policy Broker supports two MVP storage modes:
 
 1. single-repo mode, where policies live inside the application repository;
 2. registry mode, where shared policies live in a separate Git repository.
 
 Registry mode is the recommended setup for teams with multiple repositories.
 
-The policy registry is the source of truth. Metadata, BM25, and vector indexes are derived artifacts built from the registry. For the detailed model, see [Storage and indexing model](storage-and-indexing.md).
+The policy registry is the source of truth. Metadata and Tantivy full-text indexes are derived artifacts built from the registry. Vector indexes are planned but are not part of the MVP CLI indexing path. For the detailed model, see [Storage and indexing model](storage-and-indexing.md).
 
 ## Why use a separate policy registry?
 
@@ -20,7 +20,7 @@ A separate policy registry gives teams:
 - cross-repository consistency;
 - less duplication across `AGENTS.md`, `CLAUDE.md`, Cursor rules, and Copilot instructions.
 
-Application repositories keep only a small bootstrap file and local policy hints. Registry URLs, refs, cache locations, and sync behavior must come from trusted operator-controlled configuration, not from branch-controlled repository files.
+Application repositories can keep only a small bootstrap file and local policy hints. The MVP can read full registry settings from `.agent-policy.yaml` or `--config`, but hardened deployments should provide registry URLs, refs, cache locations, and sync behavior from trusted operator-controlled configuration rather than branch-controlled repository files.
 
 ## Repository layout
 
@@ -86,7 +86,12 @@ Example repository-local `.agent-policy.yaml`:
 
 ```yaml
 registry:
-  id: company
+  type: git
+  url: ~/.cache/agent-policy/registries/company
+  ref: main
+  cache_dir: ~/.cache/agent-policy/registries/company
+  sync:
+    mode: manual
 
 local_policies:
   - .agent-policy/policies
@@ -101,7 +106,7 @@ index:
     - node_modules
 ```
 
-The repository-local file may select only an operator-defined registry `id`. The broker must resolve that `id` through trusted configuration such as `/etc/agent-policy/registries.yaml`, `$XDG_CONFIG_HOME/agent-policy/registries.yaml`, or CI-managed protected settings. It must reject repo-provided registry URLs, refs, cache directories, or sync modes unless they exactly match the trusted allowlist.
+The MVP uses local filesystem registries or already-cloned cache directories. It does not clone, fetch, or pull remote registries. Future hardened deployments may let repository-local files select only an operator-defined registry `id`, with the broker resolving that `id` through trusted configuration such as `/etc/agent-policy/registries.yaml`, `$XDG_CONFIG_HOME/agent-policy/registries.yaml`, or CI-managed protected settings.
 
 Trusted operator configuration example:
 
@@ -139,8 +144,7 @@ Recommended local layout:
     company/
       manifest.json
       metadata.sqlite
-      bm25.sqlite
-      vectors/
+      fulltext/
   bundles/
     apb_2026-05-31_001.json
 ```
@@ -153,14 +157,14 @@ mkdir -p ~/.cache/agent-policy/registries
 git clone git@github.com:company/agent-policy-registry.git \
   ~/.cache/agent-policy/registries/company
 
-agent-policy index --registry company
+agent-policy index --repo ~/code/billing-api
 ```
 
 Per application repository:
 
 ```bash
 cd ~/code/billing-api
-agent-policy init
+edit .agent-policy.yaml to point at the local registry cache
 ```
 
 The coding agent then runs:
@@ -171,20 +175,17 @@ agent-policy get --repo . --task "$USER_TASK"
 
 ## Request flow
 
-When `agent-policy get` runs inside WSL, the broker should:
+When `agent-policy get` runs inside WSL, the MVP broker:
 
 1. read the application repository path;
-2. load trusted operator registry configuration;
-3. load `.agent-policy.yaml` for local policy hints and an optional registry `id`;
-4. resolve the registry URL, ref, cache location, and sync settings only from trusted configuration;
-5. reject or ignore any repo-local attempt to provide or override registry URL, ref, cache location, or sync settings;
-6. ensure the trusted registry is cloned locally;
-7. update or reuse the cached registry according to trusted sync settings;
-8. read policy modules and registry docs;
-9. read application repository metadata;
-10. query metadata, BM25, and vector indexes when available;
-11. rerank candidates and compile a concise instruction bundle;
-12. print JSON or Markdown to stdout.
+2. load `.agent-policy.yaml` or the explicit `--config` file;
+3. resolve local policy and registry cache paths;
+4. reject remote registry fetch behavior because clone, fetch, and pull are not implemented;
+5. read policy modules and configured local documentation;
+6. discover path-scoped instruction files;
+7. query metadata and full-text indexes when available;
+8. rank candidates and compile a concise instruction bundle;
+9. print JSON or Markdown to stdout.
 
 ## Index lifecycle
 
@@ -196,7 +197,7 @@ Expected lifecycle:
 policy registry commit
   -> agent-policy registry sync
   -> agent-policy index
-  -> metadata/BM25/vector indexes
+  -> metadata/full-text indexes
   -> agent-policy get
   -> concise instruction bundle
 ```
@@ -217,8 +218,8 @@ registries:
 
 Recommended modes:
 
-- `manual`: update only when the user runs `agent-policy registry sync`;
-- `auto`: fetch or pull when the local cache is older than `max_age_minutes`;
+- `manual`: use the configured local cache when the user runs `agent-policy registry sync`;
+- `auto`: MVP behavior is cached-only; remote fetch or pull is not implemented;
 - `pinned`: use an exact commit SHA and do not auto-update;
 - `offline`: use local cache only.
 

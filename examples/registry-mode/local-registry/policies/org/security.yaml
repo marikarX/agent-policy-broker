@@ -1,0 +1,19 @@
+id: example.registry.security
+version: 1
+status: active
+owner: example-security
+priority: 100
+applies_when:
+  risk_flags:
+    - auth
+    - security
+  task_types:
+    - fix_bug
+    - add_feature
+instructions:
+  - Do not log access tokens, refresh tokens, or session cookies.
+  - Keep authentication failure messages generic.
+required_checks:
+  - registry.security.review
+blocked_actions:
+  - Do not commit secrets or private keys.
