@@ -174,6 +174,7 @@ The broker may return:
 ## Documentation
 
 - [Getting started](docs/getting-started.md)
+- [Public demo scenario](docs/demo.md)
 - [Architecture](docs/architecture.md)
 - [Implementation stack](docs/implementation-stack.md)
 - [CLI reference](docs/cli-reference.md)
