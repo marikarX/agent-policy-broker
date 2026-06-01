@@ -91,7 +91,7 @@ Planned capabilities:
 
 - `agent-policy index`;
 - local SQLite metadata index;
-- Tantivy BM25 index stored as `bm25.tantivy/`;
+- Tantivy full-text index stored as `fulltext/`;
 - index manifest with registry commit;
 - local index over policy files, nested instruction files, and selected documentation;
 - stale-index detection;
@@ -128,7 +128,7 @@ Planned capabilities:
 Planned capabilities:
 
 - optional local vector retrieval;
-- evaluate `sqlite-vec` first;
+- evaluate `sqlite-vec` first, with a deterministic in-memory prototype used until the integration is stable;
 - keep vector retrieval behind a feature flag if needed;
 - preserve metadata and policy priority as the authority;
 - avoid raw vector-search dumps into agent context.

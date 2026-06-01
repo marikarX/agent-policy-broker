@@ -4,13 +4,20 @@ members = [
     "crates/agent-policy-core",
     "crates/agent-policy-config",
     "crates/agent-policy-discover",
+    "crates/agent-policy-retrieval",
 ]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
 license = "MIT"
+rust-version = "1.80"
 version = "0.1.0"
+description = "A CLI and local service prototype for delivering task-specific coding-agent policy bundles."
+repository = "https://github.com/marikarX/agent-policy-broker"
+readme = "README.md"
+keywords = ["agents", "cli", "policy", "retrieval"]
+categories = ["command-line-utilities", "development-tools"]
 
 [workspace.dependencies]
 anyhow = "1"
@@ -20,5 +27,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 rusqlite = { version = "0.32", features = ["bundled"] }
+tantivy = "0.22"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
 tracing = "0.1"
 walkdir = "2"

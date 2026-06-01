@@ -1,0 +1,14 @@
+id: example.migration.billing
+version: 1
+status: draft
+owner: example-billing
+priority: 40
+applies_when:
+  paths:
+    - service/**
+  languages:
+    - typescript
+instructions:
+  - Prefer deterministic invoice calculations with integer cents.
+required_checks:
+  - migration.invoice.tests

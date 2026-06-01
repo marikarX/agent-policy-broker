@@ -15,6 +15,8 @@ fn missing_config_returns_defaults() {
     let config = load_config(&repo_dir).expect("missing repo config should fall back to defaults");
 
     assert_eq!(config, AgentPolicyConfig::default());
+    assert!(!config.index.vector.enabled);
+    assert!(config.index.include.is_empty());
 }
 
 #[test]
@@ -50,6 +52,41 @@ fn explicit_config_path_loads_correctly() {
 
     assert_eq!(config.output_budget.max_tokens, 1024);
     assert_eq!(config.output_budget.include_explanations, "full");
+}
+
+#[test]
+fn codex_config_fields_load_correctly() {
+    let repo_dir = create_temp_dir("codex-config");
+    fs::write(
+        repo_dir.join(".agent-policy.yaml"),
+        r#"
+codex:
+  enabled: true
+  home: /tmp/codex-home
+  current_dir: backend/payments
+  project_doc_fallback_filenames:
+    - INSTRUCTIONS.md
+    - .rules.md
+  project_doc_max_bytes: 64
+  include_global: true
+"#,
+    )
+    .expect("config should be written");
+
+    let config = load_config(&repo_dir).expect("codex config should parse");
+
+    assert!(config.codex.enabled);
+    assert_eq!(config.codex.home.as_deref(), Some("/tmp/codex-home"));
+    assert_eq!(
+        config.codex.current_dir.as_deref(),
+        Some("backend/payments")
+    );
+    assert_eq!(
+        config.codex.project_doc_fallback_filenames,
+        vec!["INSTRUCTIONS.md", ".rules.md"]
+    );
+    assert_eq!(config.codex.project_doc_max_bytes, 64);
+    assert!(config.codex.include_global);
 }
 
 #[test]

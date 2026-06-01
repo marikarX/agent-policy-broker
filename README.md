@@ -22,21 +22,22 @@ The goal is to help coding agents follow engineering standards, security rules, 
 
 ## Status
 
-This repository is in the documentation and design phase. The current focus is defining the open-source core:
+This repository is in active early implementation. The open-source core now includes a Rust CLI and local service prototype for:
 
-- policy schema
-- CLI behavior
-- configuration model
-- Rust implementation stack
-- agent bootstrap patterns
-- layered instruction discovery for nested repo guidance
-- inspection and migration of existing repo instructions
-- hybrid retrieval and context budgeting
-- deterministic policy selection
-- instruction bundle compilation
-- registry mode for shared policy repositories
-- storage and indexing model for Git-backed policies and derived retrieval indexes
-- examples for common coding-agent workflows
+- policy schema and validation
+- local and registry-backed policy loading
+- configuration parsing
+- generic and Codex-compatible instruction discovery
+- Markdown instruction extraction from existing repo guidance
+- task-specific instruction bundle compilation
+- deterministic policy matching, conflict handling, and context budgeting
+- SQLite metadata indexes and Tantivy full-text retrieval
+- optional local vector-retrieval abstractions
+- repository inspection and migration draft generation
+- GitHub Actions PR reporting example
+- localhost service endpoints for repeated lookups and editor integrations
+
+The project is still pre-release. Interfaces, schemas, and command behavior may change while the MVP is hardened.
 
 ## Why this exists
 
@@ -55,6 +56,13 @@ AGENTS.md / CLAUDE.md / editor rules
         -> agent receives compact policy bundle
         -> agent applies instructions and reports policy version
 ```
+
+Instruction discovery has two modes:
+
+- **Generic mode** scans existing repository guidance such as nested `AGENTS.md`, `CLAUDE.md`, Cursor rules, and Copilot instructions.
+- **Codex-compatible mode** mirrors Codex `AGENTS.md` loading: optional global `CODEX_HOME` guidance, `AGENTS.override.md` before `AGENTS.md`, fallback filenames configured through `codex.project_doc_fallback_filenames`, one active file per directory, and a project-root-to-current-directory chain.
+
+Codex mode skips empty files and reports omitted or truncated files. Project instruction reads default to `32768` bytes via `codex.project_doc_max_bytes`.
 
 ## Core idea
 
@@ -82,7 +90,7 @@ vector retrieval for recall
 = small, high-signal agent instructions
 ```
 
-The Git policy registry remains the source of truth. Metadata, BM25, and vector indexes are derived artifacts built from the registry and selected documentation.
+The Git policy registry remains the source of truth. `metadata.sqlite`, `fulltext/`, and vector indexes are derived artifacts built from the registry and selected documentation.
 
 ## Non-goals
 
@@ -166,6 +174,7 @@ The broker may return:
 ## Documentation
 
 - [Getting started](docs/getting-started.md)
+- [Public demo scenario](docs/demo.md)
 - [Architecture](docs/architecture.md)
 - [Implementation stack](docs/implementation-stack.md)
 - [CLI reference](docs/cli-reference.md)
@@ -179,12 +188,55 @@ The broker may return:
 - [Registry mode and WSL workflow](docs/registry-mode.md)
 - [Policy schema](docs/policy-schema.md)
 - [Agent integration](docs/agent-integration.md)
+- [GitHub Actions PR example](docs/github-action.md)
 - [Project scope](docs/project-scope.md)
 - [Threat model](docs/threat-model.md)
 - [Roadmap](docs/roadmap.md)
 - [Privacy](PRIVACY.md)
 - [Security](SECURITY.md)
 - [Contributing](CONTRIBUTING.md)
+
+## Install
+
+Agent Policy Broker is currently installed from source. From the repository root:
+
+```bash
+cargo install --path crates/agent-policy-cli
+```
+
+This installs the `agent-policy` binary into Cargo's bin directory, typically `~/.cargo/bin`.
+
+For local development without installing:
+
+```bash
+cargo run -p agent-policy-cli -- --help
+```
+
+## Build and release
+
+Build an optimized local binary with:
+
+```bash
+cargo build --release -p agent-policy-cli
+```
+
+The binary is written to `target/release/agent-policy`.
+
+Before tagging or sharing a build, run the same checks used by CI:
+
+```bash
+cargo check --workspace --all-targets
+cargo test --workspace --all-targets
+```
+
+Cross-platform builds can be produced with standard Cargo targets when the Rust target and any required system toolchain are installed:
+
+```bash
+rustup target add x86_64-unknown-linux-gnu
+cargo build --release -p agent-policy-cli --target x86_64-unknown-linux-gnu
+```
+
+The CLI uses `rusqlite` with bundled SQLite, which keeps local builds simple across common Linux, macOS, and Windows environments.
 
 ## Repository layout
 
@@ -202,6 +254,7 @@ The broker may return:
 │   ├── configuration.md
 │   ├── conflict-resolution.md
 │   ├── context-budgeting.md
+│   ├── github-action.md
 │   ├── getting-started.md
 │   ├── implementation-stack.md
 │   ├── instruction-discovery.md
@@ -228,7 +281,7 @@ The broker may return:
 4. **Support gradual migration**: inspect existing instruction files, detect duplicates/conflicts, and generate draft broker policies for human review.
 5. **Deterministic first**: policy selection should be explainable and reproducible.
 6. **Policy as code**: policies should be versioned, reviewed, and owned.
-7. **Indexes are derived artifacts**: metadata, BM25, and vector indexes accelerate retrieval but do not replace the Git policy registry as source of truth.
+7. **Indexes are derived artifacts**: metadata, full-text, and vector indexes accelerate retrieval but do not replace the Git policy registry as source of truth.
 8. **Local-first**: the open-source core should work without a hosted service.
 9. **Vendor-neutral**: support Codex, Claude Code, Copilot, Cursor, and other coding agents through simple command execution first.
 10. **Auditable**: every returned instruction should be traceable to a source policy.

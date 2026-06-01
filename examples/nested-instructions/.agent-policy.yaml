@@ -1,0 +1,14 @@
+local_policies:
+  - .agent-policy/policies
+codex:
+  enabled: true
+  current_dir: services/api/src
+  project_doc_max_bytes: 32768
+  include_global: false
+output_budget:
+  max_tokens: 800
+  max_instructions: 7
+  max_required_checks: 3
+  max_blocked_actions: 3
+  include_examples: false
+  include_explanations: compact

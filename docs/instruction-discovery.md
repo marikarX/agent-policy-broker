@@ -6,6 +6,25 @@ The broker should treat existing instruction files as path-scoped guidance sourc
 
 For auditing and migrating existing repositories, see [Repository inspection and migration](repo-inspection-and-migration.md).
 
+## Discovery modes
+
+The broker supports two instruction discovery modes:
+
+- **Generic mode** scans the repository for supported agent files such as `AGENTS.md`, `CLAUDE.md`, Copilot instructions, and Cursor rules. This is the default mode and preserves the existing broad discovery behavior.
+- **Codex-compatible mode** follows Codex `AGENTS.md` discovery semantics for the active working directory. Use it when the broker should mirror what Codex would load.
+
+Codex-compatible mode:
+
+- optionally reads one global file from `codex.home` or `CODEX_HOME`, checking `AGENTS.override.md` before `AGENTS.md`;
+- starts at the project root and walks down to `codex.current_dir`;
+- checks one active file per directory in this order: `AGENTS.override.md`, `AGENTS.md`, then names in `codex.project_doc_fallback_filenames`;
+- uses fallback names only when no override or `AGENTS.md` exists in that directory;
+- skips empty files;
+- reads at most `codex.project_doc_max_bytes` bytes per project file, defaulting to `32768`;
+- reports omission and truncation metadata in discovery JSON.
+
+Project files are merged from root to current directory. Later, more-specific directory guidance overrides earlier guidance at the same trust level. Sibling directory instructions are not active in Codex-compatible mode.
+
 ## Supported instruction sources
 
 Common sources include:
@@ -74,10 +93,16 @@ MVP implementations may support exact trusted paths only. Later versions may sup
 
 ## Discovery command
 
-A future CLI should expose discovery:
+Generic discovery:
 
 ```bash
 agent-policy discover --repo .
+```
+
+Codex-compatible discovery:
+
+```bash
+agent-policy discover --repo . --mode codex --format json
 ```
 
 Possible output:
@@ -106,6 +131,8 @@ Possible output:
   ]
 }
 ```
+
+Codex-compatible output may also include source byte metadata and an `omissions` list for skipped empty files or shadowed lower-precedence files.
 
 ## Runtime behavior
 

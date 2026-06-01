@@ -1,0 +1,18 @@
+id: example.registry-mode.repo
+version: 1
+status: active
+owner: example-app
+priority: 60
+applies_when:
+  paths:
+    - src/auth/**
+  languages:
+    - typescript
+  task_types:
+    - fix_bug
+    - add_feature
+instructions:
+  - Keep auth helper functions deterministic and easy to unit test.
+  - Return typed auth results instead of throwing raw strings.
+required_checks:
+  - registry-mode.auth.tests

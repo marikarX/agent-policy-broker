@@ -1,118 +1,17 @@
-use clap::{Args, Parser, Subcommand, ValueEnum};
-use rusqlite::{params, Connection};
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
-use std::time::{SystemTime, UNIX_EPOCH};
+mod cli;
+mod commands;
+mod git;
+mod indexing;
+mod paths;
+mod render;
 
-use agent_policy_config::{
-    load_config, load_config_from_path, validate_config_file, RegistryConfig, SyncMode,
-};
-use agent_policy_core::{
-    build_instruction_bundle, collect_policy_files, load_policies_from_dirs,
-    load_policies_from_registry, render_bundle_json, render_bundle_markdown, validate_policy_files,
-    AppliesWhen, BundleBuildOptions, DetectedContext, LoadedPolicy, OutputBudget, Policy,
-    PolicyStatus, PolicyValidationSeverity, PolicyVersion, RegistryLoadOptions, SourceRef,
-    TaskDetails, TaskIntent, TaskType,
-};
-use agent_policy_discover::{
-    discover, discover_json, DiscoveryResult, InstructionSource, InstructionSourceType,
-    MarkdownInstructionCandidate, MarkdownInstructionCandidateType,
-};
-use anyhow::Context;
+use std::process::ExitCode;
 
-#[derive(Debug, Parser)]
-#[command(name = "agent-policy", version, about = "Agent Policy Broker CLI")]
-struct Cli {
-    #[command(flatten)]
-    global: GlobalArgs,
-    #[command(subcommand)]
-    command: Commands,
-}
-
-#[derive(Clone, Debug, ValueEnum)]
-enum OutputFormat {
-    Json,
-    Markdown,
-}
-
-#[derive(Debug, Args)]
-struct GlobalArgs {
-    #[arg(long, global = true, value_name = "path")]
-    repo: Option<PathBuf>,
-    #[arg(long, global = true, value_name = "path")]
-    config: Option<PathBuf>,
-    #[arg(long, global = true, value_enum)]
-    format: Option<OutputFormat>,
-    #[arg(long, global = true)]
-    verbose: bool,
-    #[arg(long, global = true)]
-    quiet: bool,
-    #[arg(long, global = true)]
-    no_network: bool,
-}
-
-#[derive(Debug, Subcommand)]
-enum Commands {
-    /// Compile a task-specific instruction bundle.
-    Get(GetArgs),
-    /// Discover existing instruction sources in a repository.
-    Discover,
-    /// Validate policies, config, and discovered instruction sources.
-    Validate,
-    /// Inspect repository guidance and produce an audit report.
-    Inspect,
-    /// Propose policy drafts from existing instruction sources.
-    Migrate(MigrateArgs),
-    /// Build or rebuild local retrieval indexes.
-    Index,
-    /// Manage policy registries.
-    Registry(RegistryArgs),
-    /// Run a local service for repeated lookups and integrations.
-    Serve,
-}
-
-#[derive(Debug, Args)]
-struct RegistryArgs {
-    #[command(subcommand)]
-    command: RegistryCommands,
-}
-
-#[derive(Debug, Args)]
-struct GetArgs {
-    #[arg(long, value_name = "text")]
-    task: Option<String>,
-    #[arg(long = "type", value_name = "task_type")]
-    task_type: Option<String>,
-    #[arg(long, value_name = "path", num_args = 1..)]
-    files: Vec<String>,
-    #[arg(long, value_name = "flag", num_args = 1..)]
-    risk: Vec<String>,
-    #[arg(long, value_name = "number")]
-    max_instructions: Option<u32>,
-    #[arg(long, value_name = "number")]
-    max_tokens: Option<u32>,
-}
-
-#[derive(Debug, Args)]
-struct MigrateArgs {
-    #[arg(long)]
-    dry_run: bool,
-    #[arg(long)]
-    write: bool,
-}
-
-#[derive(Debug, Subcommand)]
-enum RegistryCommands {
-    /// Fetch or update a Git-backed policy registry.
-    Sync,
-}
+use clap::Parser;
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    match run(cli) {
+    let cli = cli::Cli::parse();
+    match cli::run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error:#}");

@@ -1,0 +1,18 @@
+id: example.nested.api
+version: 1
+status: active
+owner: example-api
+priority: 80
+applies_when:
+  paths:
+    - services/api/**
+  languages:
+    - typescript
+  task_types:
+    - fix_bug
+    - add_feature
+instructions:
+  - Preserve API response keys unless the task requests a contract change.
+  - Add or update a handler test for behavior changes.
+required_checks:
+  - nested.api.tests
