@@ -33,6 +33,14 @@ Follow the returned instructions unless they conflict with higher-priority syste
 If the command fails, follow the fallback rules in this file and report that policy lookup was unavailable.
 ```
 
+For Codex-compatible discovery, configure the broker and call:
+
+```bash
+agent-policy get --repo . --instruction-mode codex --task "$USER_TASK"
+```
+
+In this mode the broker mirrors Codex `AGENTS.md` loading: optional global instructions from `CODEX_HOME`, `AGENTS.override.md` before `AGENTS.md`, fallback project filenames only when neither standard file exists, and one active file per directory from project root to the configured current directory. Empty files are skipped, and truncated or omitted files are reported in JSON discovery metadata.
+
 ## Claude Code / CLAUDE.md
 
 Example `CLAUDE.md`:

@@ -56,6 +56,13 @@ AGENTS.md / CLAUDE.md / editor rules
         -> agent applies instructions and reports policy version
 ```
 
+Instruction discovery has two modes:
+
+- **Generic mode** scans existing repository guidance such as nested `AGENTS.md`, `CLAUDE.md`, Cursor rules, and Copilot instructions.
+- **Codex-compatible mode** mirrors Codex `AGENTS.md` loading: optional global `CODEX_HOME` guidance, `AGENTS.override.md` before `AGENTS.md`, fallback filenames configured through `codex.project_doc_fallback_filenames`, one active file per directory, and a project-root-to-current-directory chain.
+
+Codex mode skips empty files and reports omitted or truncated files. Project instruction reads default to `32768` bytes via `codex.project_doc_max_bytes`.
+
 ## Core idea
 
 Agent Policy Broker is not just a document retriever. It is an instruction compiler.
@@ -82,7 +89,7 @@ vector retrieval for recall
 = small, high-signal agent instructions
 ```
 
-The Git policy registry remains the source of truth. Metadata, BM25, and vector indexes are derived artifacts built from the registry and selected documentation.
+The Git policy registry remains the source of truth. `metadata.sqlite`, `fulltext/`, and vector indexes are derived artifacts built from the registry and selected documentation.
 
 ## Non-goals
 
@@ -230,7 +237,7 @@ The broker may return:
 4. **Support gradual migration**: inspect existing instruction files, detect duplicates/conflicts, and generate draft broker policies for human review.
 5. **Deterministic first**: policy selection should be explainable and reproducible.
 6. **Policy as code**: policies should be versioned, reviewed, and owned.
-7. **Indexes are derived artifacts**: metadata, BM25, and vector indexes accelerate retrieval but do not replace the Git policy registry as source of truth.
+7. **Indexes are derived artifacts**: metadata, full-text, and vector indexes accelerate retrieval but do not replace the Git policy registry as source of truth.
 8. **Local-first**: the open-source core should work without a hosted service.
 9. **Vendor-neutral**: support Codex, Claude Code, Copilot, Cursor, and other coding agents through simple command execution first.
 10. **Auditable**: every returned instruction should be traceable to a source policy.

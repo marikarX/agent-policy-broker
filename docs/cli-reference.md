@@ -72,9 +72,16 @@ Recommended flags:
 --files <paths...>             Relevant files.
 --risk <flags...>              Risk flags such as auth, payments, migrations, public_api.
 --intent <path>                JSON intent file.
+--instruction-mode <mode>      Instruction discovery mode: generic or codex.
 --format <json|markdown>       Output bundle format.
 --max-tokens <number>          Override output token budget.
 --max-instructions <number>    Override instruction count budget.
+```
+
+Use Codex-compatible discovery for task bundles:
+
+```bash
+agent-policy get --repo . --instruction-mode codex --task "fix refund retry handling"
 ```
 
 ## `agent-policy discover`
@@ -85,7 +92,14 @@ Discover existing instruction sources in a repository.
 agent-policy discover --repo . --format json
 ```
 
-This should find files such as:
+Discovery modes:
+
+```bash
+agent-policy discover --repo . --mode generic
+agent-policy discover --repo . --mode codex
+```
+
+Generic mode scans for files such as:
 
 ```text
 AGENTS.md
@@ -95,12 +109,20 @@ CLAUDE.md
 .agent-policy/policies/**
 ```
 
+Codex-compatible mode follows Codex `AGENTS.md` semantics: `AGENTS.override.md` wins over `AGENTS.md`, fallback filenames are used only when both are absent, one file is active per directory, and only the project-root-to-current-directory chain is active. Optional global instructions come from `codex.home` or `CODEX_HOME` when `codex.include_global` is enabled. Empty files are skipped, and max-byte truncation or omissions are reported in JSON metadata.
+
 ## `agent-policy inspect`
 
 Inspect an existing repository and produce an audit report.
 
 ```bash
 agent-policy inspect --repo . --format markdown --output agent-policy-report.md
+```
+
+Use Codex-compatible discovery for the report:
+
+```bash
+agent-policy inspect --repo . --mode codex --format markdown
 ```
 
 The report should include:
@@ -180,12 +202,12 @@ The index command may create:
 
 ```text
 metadata.sqlite
-bm25.sqlite
+fulltext/
 vectors/
 manifest.json
 ```
 
-Indexes are derived artifacts and should be rebuildable from the policy registry.
+`metadata.sqlite` and `fulltext/` are derived index artifacts. They accelerate lookup but should be rebuildable from the policy registry and configured local sources.
 
 ## `agent-policy registry sync`
 

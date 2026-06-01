@@ -31,6 +31,14 @@ instruction_sources:
     - node_modules/**
     - vendor/**
 
+codex:
+  enabled: false
+  home: null
+  current_dir: null
+  project_doc_fallback_filenames: []
+  project_doc_max_bytes: 32768
+  include_global: false
+
 index:
   include:
     - .agent-policy/policies
@@ -128,6 +136,34 @@ Instruction sources are path-scoped. A file at `backend/AGENTS.md` applies to `b
 Repository-local configuration should list instruction files to discover, not promote those files to trusted precedence. The optional `trusted` list is reserved for trusted operator or deployment configuration that is outside branch-controlled repository contents. Branch-controlled files should be treated as untrusted unless the deployment has a review model that makes the path authoritative.
 
 MVP implementations may support only exact path entries in `trusted`. Later versions may support glob patterns and source classes.
+
+## `codex`
+
+Controls Codex-compatible `AGENTS.md` discovery when a command selects Codex mode.
+
+```yaml
+codex:
+  enabled: true
+  home: ~/.codex
+  current_dir: backend/payments
+  project_doc_fallback_filenames:
+    - INSTRUCTIONS.md
+  project_doc_max_bytes: 32768
+  include_global: true
+```
+
+Fields:
+
+```text
+enabled                         Enables Codex-compatible discovery for integrations that opt into it.
+home                            Optional Codex home. If omitted, CODEX_HOME is used, then ~/.codex when global instructions are requested.
+current_dir                     Requested current directory. Relative paths are resolved from the project root.
+project_doc_fallback_filenames  Extra project instruction filenames checked after AGENTS.override.md and AGENTS.md.
+project_doc_max_bytes           Maximum bytes read per project instruction file. Defaults to 32768.
+include_global                  Include the first non-empty global file from Codex home.
+```
+
+Codex-compatible discovery checks `AGENTS.override.md` before `AGENTS.md`; fallback filenames are used only if neither exists in that directory. It walks from the project root to `current_dir`, activates at most one instruction file per directory, skips empty files, and reports skipped or truncated files in discovery metadata.
 
 ## `check_definitions`
 
