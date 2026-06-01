@@ -1,12 +1,10 @@
 # CLI reference
 
-This document defines the intended command-line interface for Agent Policy Broker.
+This document defines the implemented MVP command-line interface for Agent Policy Broker.
 
 The CLI should be local-first, scriptable, and safe by default. Commands should support JSON output for automation and Markdown output for direct agent consumption where useful.
 
 ## Global conventions
-
-Recommended global flags:
 
 ```bash
 agent-policy <command> [flags]
@@ -17,29 +15,25 @@ Common flags:
 ```text
 --repo <path>             Repository path. Defaults to current directory.
 --config <path>           Explicit config file path.
---registry <name|path>    Registry name or local path.
 --format <json|markdown>  Output format. Defaults depend on command.
---output <path>           Write output to a file.
---no-network              Do not fetch remote registries or call remote endpoints.
+--no-network              Use only local files and cached registries.
 --verbose                 Print diagnostic details.
 --quiet                   Print only essential output.
 ```
 
-## Exit codes
+The MVP writes command output to stdout. Redirect stdout from the shell when a file is needed.
 
-Suggested exit codes:
+## Exit Codes
+
+Current exit behavior:
 
 ```text
 0   success
 1   general failure
-2   invalid arguments
-3   configuration error
-4   policy validation error
-5   registry sync error
-6   index error
-7   conflict detected
-8   unsafe operation blocked
+2   invalid arguments reported by clap
 ```
+
+More granular exit codes are planned, but are not implemented in the MVP.
 
 ## `agent-policy get`
 
@@ -58,23 +52,23 @@ agent-policy get \
   --files src/payments/refunds.ts tests/payments/refunds.test.ts
 ```
 
-With JSON intent:
-
-```bash
-agent-policy get --intent intent.json --format json
-```
-
-Recommended flags:
+Implemented flags:
 
 ```text
 --task <text>                  Task summary.
 --type <task_type>             Task type such as fix_bug, add_feature, refactor, test, docs.
 --files <paths...>             Relevant files.
 --risk <flags...>              Risk flags such as auth, payments, migrations, public_api.
---intent <path>                JSON intent file.
+--instruction-mode <mode>      Instruction discovery mode: generic or codex.
 --format <json|markdown>       Output bundle format.
 --max-tokens <number>          Override output token budget.
 --max-instructions <number>    Override instruction count budget.
+```
+
+Use Codex-compatible discovery for task bundles:
+
+```bash
+agent-policy get --repo . --instruction-mode codex --task "fix refund retry handling"
 ```
 
 ## `agent-policy discover`
@@ -85,7 +79,14 @@ Discover existing instruction sources in a repository.
 agent-policy discover --repo . --format json
 ```
 
-This should find files such as:
+Discovery modes:
+
+```bash
+agent-policy discover --repo . --mode generic
+agent-policy discover --repo . --mode codex
+```
+
+Generic mode scans for files such as:
 
 ```text
 AGENTS.md
@@ -95,12 +96,20 @@ CLAUDE.md
 .agent-policy/policies/**
 ```
 
+Codex-compatible mode follows Codex `AGENTS.md` semantics: `AGENTS.override.md` wins over `AGENTS.md`, fallback filenames are used only when both are absent, one file is active per directory, and only the project-root-to-current-directory chain is active. Optional global instructions come from `codex.home` or `CODEX_HOME` when `codex.include_global` is enabled. Empty files are skipped, and max-byte truncation or omissions are reported in JSON metadata.
+
 ## `agent-policy inspect`
 
 Inspect an existing repository and produce an audit report.
 
 ```bash
-agent-policy inspect --repo . --format markdown --output agent-policy-report.md
+agent-policy inspect --repo . --format markdown > agent-policy-report.md
+```
+
+Use Codex-compatible discovery for the report:
+
+```bash
+agent-policy inspect --repo . --mode codex --format markdown
 ```
 
 The report should include:
@@ -141,12 +150,6 @@ Validate policies, config, and optionally discovered instruction sources.
 agent-policy validate --repo .
 ```
 
-Validate a registry:
-
-```bash
-agent-policy validate --registry company
-```
-
 Validation should check:
 
 - schema correctness;
@@ -163,39 +166,28 @@ Validation should check:
 Build or rebuild local retrieval indexes.
 
 ```bash
-agent-policy index --registry company
-```
-
-With explicit include paths:
-
-```bash
-agent-policy index \
-  --registry company \
-  --include policies \
-  --include docs \
-  --exclude secrets
+agent-policy index --repo .
 ```
 
 The index command may create:
 
 ```text
 metadata.sqlite
-bm25.sqlite
-vectors/
+fulltext/
 manifest.json
 ```
 
-Indexes are derived artifacts and should be rebuildable from the policy registry.
+`metadata.sqlite` and `fulltext/` are derived index artifacts under the local cache directory. They accelerate lookup but are rebuildable from local policies, a configured cached registry, and configured `index.include` documentation paths.
 
 ## `agent-policy registry sync`
 
-Fetch or update a Git-backed policy registry.
+Validate and use a local cached Git-backed policy registry.
 
 ```bash
-agent-policy registry sync --registry company
+agent-policy registry sync --repo .
 ```
 
-This should obey registry sync settings such as `manual`, `auto`, `pinned`, and `offline`.
+The MVP does not clone, fetch, or pull remote registries. It accepts local filesystem registries, `file://` registries, or already-cloned cache directories configured in `.agent-policy.yaml`. `--no-network`, `offline`, and `pinned` modes use only the local cache.
 
 ## `agent-policy serve`
 
@@ -205,9 +197,16 @@ Run a local service for faster repeated lookups or editor integrations.
 agent-policy serve --host 127.0.0.1 --port 8765
 ```
 
-The service should bind to localhost by default.
+The service binds to `127.0.0.1` by default. Binding to any other host is explicit via `--host`.
 
-Suggested endpoints are described in a future local service API document.
+Implemented endpoints:
+
+```text
+GET  /health
+POST /instructions
+POST /discover
+POST /inspect
+```
 
 ## Error format
 

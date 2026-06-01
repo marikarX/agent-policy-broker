@@ -43,13 +43,19 @@ agent-policy inspect --repo .
 For a migration-oriented report:
 
 ```bash
-agent-policy inspect --repo . --format markdown --output agent-policy-report.md
+agent-policy inspect --repo . --format markdown > agent-policy-report.md
 ```
 
 For machine-readable output:
 
 ```bash
 agent-policy inspect --repo . --format json
+```
+
+To inspect using Codex-compatible `AGENTS.md` discovery:
+
+```bash
+agent-policy inspect --repo . --mode codex --format json
 ```
 
 ## What inspection should do
@@ -68,6 +74,10 @@ Inspection should:
 10. propose a migration plan.
 
 ## Instruction source discovery
+
+Inspection uses generic discovery by default. Generic mode scans all supported instruction source types and nested paths.
+
+Codex-compatible mode follows the active Codex project chain instead: project root to `codex.current_dir`, one active file per directory, `AGENTS.override.md` before `AGENTS.md`, configured fallback filenames only when both standard files are absent, and optional global instructions from `codex.home` or `CODEX_HOME`. Empty files are skipped; skipped and truncated files are reported in metadata.
 
 Supported sources include:
 

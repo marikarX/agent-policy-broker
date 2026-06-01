@@ -1,0 +1,15 @@
+local_policies:
+  - .agent-policy/policies
+instruction_sources:
+  include:
+    - AGENTS.md
+    - packages/**/AGENTS.md
+  exclude:
+    - node_modules/**
+output_budget:
+  max_tokens: 900
+  max_instructions: 8
+  max_required_checks: 4
+  max_blocked_actions: 4
+  include_examples: false
+  include_explanations: compact

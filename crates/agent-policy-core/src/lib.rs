@@ -208,6 +208,12 @@ pub struct ContextBudgetReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate_policies_omitted: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exact_candidate_policies: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bm25_candidate_policies: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vector_candidate_policies: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
@@ -256,18 +262,73 @@ pub fn build_instruction_bundle(
     policies: &[LoadedPolicy],
     options: BundleBuildOptions,
 ) -> Result<InstructionBundle> {
+    build_instruction_bundle_inner(
+        intent,
+        policies,
+        options,
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+    )
+}
+
+pub fn build_instruction_bundle_with_bm25_candidates(
+    intent: &TaskIntent,
+    policies: &[LoadedPolicy],
+    options: BundleBuildOptions,
+    bm25_candidate_ids: &BTreeSet<String>,
+) -> Result<InstructionBundle> {
+    build_instruction_bundle_with_retrieval_candidates(
+        intent,
+        policies,
+        options,
+        bm25_candidate_ids,
+        &BTreeSet::new(),
+    )
+}
+
+pub fn build_instruction_bundle_with_retrieval_candidates(
+    intent: &TaskIntent,
+    policies: &[LoadedPolicy],
+    options: BundleBuildOptions,
+    bm25_candidate_ids: &BTreeSet<String>,
+    vector_candidate_ids: &BTreeSet<String>,
+) -> Result<InstructionBundle> {
+    build_instruction_bundle_inner(
+        intent,
+        policies,
+        options,
+        bm25_candidate_ids,
+        vector_candidate_ids,
+    )
+}
+
+fn build_instruction_bundle_inner(
+    intent: &TaskIntent,
+    policies: &[LoadedPolicy],
+    options: BundleBuildOptions,
+    bm25_candidate_ids: &BTreeSet<String>,
+    vector_candidate_ids: &BTreeSet<String>,
+) -> Result<InstructionBundle> {
     let mut matched = policies
         .iter()
-        .filter_map(|loaded| match_policy(intent, loaded).transpose())
+        .filter_map(|loaded| {
+            match_policy(intent, loaded, bm25_candidate_ids, vector_candidate_ids).transpose()
+        })
         .collect::<Result<Vec<_>>>()?;
 
     matched.sort_by(|left, right| {
         right
-            .loaded
-            .policy
-            .priority
-            .unwrap_or(0)
-            .cmp(&left.loaded.policy.priority.unwrap_or(0))
+            .source
+            .authority_rank()
+            .cmp(&left.source.authority_rank())
+            .then_with(|| {
+                right
+                    .loaded
+                    .policy
+                    .priority
+                    .unwrap_or(0)
+                    .cmp(&left.loaded.policy.priority.unwrap_or(0))
+            })
             .then_with(|| right.score.rank.cmp(&left.score.rank))
             .then_with(|| {
                 right
@@ -280,6 +341,20 @@ pub fn build_instruction_bundle(
     });
 
     let candidate_count = matched.len();
+    let exact_candidate_count = matched
+        .iter()
+        .filter(|matched| matched.source == PolicyMatchSource::Exact)
+        .count();
+    let bm25_candidate_count = matched
+        .iter()
+        .filter(|matched| matched.source == PolicyMatchSource::Bm25)
+        .count();
+    let vector_candidate_count = matched
+        .iter()
+        .filter(|matched| matched.source == PolicyMatchSource::Vector)
+        .count();
+    let include_retrieval_counts =
+        !bm25_candidate_ids.is_empty() || !vector_candidate_ids.is_empty();
     let instruction_limit = options.max_instructions.map(|value| value as usize);
     let required_check_limit = options.max_required_checks.map(|value| value as usize);
     let blocked_action_limit = options.max_blocked_actions.map(|value| value as usize);
@@ -397,6 +472,12 @@ pub fn build_instruction_bundle(
             estimate_method: Some("approx_words".into()),
             candidate_policies_considered: Some(candidate_count as u32),
             candidate_policies_omitted: Some(omitted as u32),
+            exact_candidate_policies: include_retrieval_counts
+                .then_some(exact_candidate_count as u32),
+            bm25_candidate_policies: include_retrieval_counts
+                .then_some(bm25_candidate_count as u32),
+            vector_candidate_policies: include_retrieval_counts
+                .then_some(vector_candidate_count as u32),
             reason: context_budget_reason,
         },
         warnings,
@@ -550,6 +631,15 @@ fn render_budget_summary(context_budget: &ContextBudgetReport) -> String {
     if let Some(omitted) = context_budget.candidate_policies_omitted {
         parts.push(format!("policies omitted: {omitted}"));
     }
+    if let Some(exact) = context_budget.exact_candidate_policies {
+        parts.push(format!("exact candidates: {exact}"));
+    }
+    if let Some(bm25) = context_budget.bm25_candidate_policies {
+        parts.push(format!("BM25 candidates: {bm25}"));
+    }
+    if let Some(vector) = context_budget.vector_candidate_policies {
+        parts.push(format!("vector candidates: {vector}"));
+    }
 
     if parts.is_empty() {
         "No budget details reported.".into()
@@ -601,6 +691,24 @@ struct MatchedPolicy<'a> {
     loaded: &'a LoadedPolicy,
     reason: String,
     score: MatchScore,
+    source: PolicyMatchSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PolicyMatchSource {
+    Exact,
+    Bm25,
+    Vector,
+}
+
+impl PolicyMatchSource {
+    fn authority_rank(self) -> u8 {
+        match self {
+            Self::Exact => 1,
+            Self::Bm25 => 0,
+            Self::Vector => 0,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -839,6 +947,8 @@ fn fail_on_safety_weakening(
 fn match_policy<'a>(
     intent: &TaskIntent,
     loaded: &'a LoadedPolicy,
+    bm25_candidate_ids: &BTreeSet<String>,
+    vector_candidate_ids: &BTreeSet<String>,
 ) -> Result<Option<MatchedPolicy<'a>>> {
     let policy = &loaded.policy;
     if policy.status != PolicyStatus::Active {
@@ -866,7 +976,16 @@ fn match_policy<'a>(
     }
 
     if reasons.is_empty() && !is_global_policy(applies) {
-        return Ok(None);
+        // Retrieval candidates are recall signals only after structured applicability
+        // filters have found no conflicts with the task intent. They must not
+        // override explicit task type, risk flag, path, language, framework, or
+        // package-manager mismatches.
+        return Ok(retrieval_policy_match(
+            intent,
+            loaded,
+            bm25_candidate_ids,
+            vector_candidate_ids,
+        ));
     }
 
     let reason = if reasons.is_empty() {
@@ -879,7 +998,51 @@ fn match_policy<'a>(
         loaded,
         reason,
         score,
+        source: PolicyMatchSource::Exact,
     }))
+}
+
+fn retrieval_policy_match<'a>(
+    intent: &TaskIntent,
+    loaded: &'a LoadedPolicy,
+    bm25_candidate_ids: &BTreeSet<String>,
+    vector_candidate_ids: &BTreeSet<String>,
+) -> Option<MatchedPolicy<'a>> {
+    let policy = &loaded.policy;
+    if !repo_scope_matches(&policy.applies_when, intent) {
+        return None;
+    }
+
+    if bm25_candidate_ids.contains(&policy.id) {
+        return Some(MatchedPolicy {
+            loaded,
+            reason: "Matched BM25 keyword candidate.".to_string(),
+            score: MatchScore {
+                rank: 10,
+                path_specificity: 0,
+            },
+            source: PolicyMatchSource::Bm25,
+        });
+    }
+
+    vector_candidate_ids
+        .contains(&policy.id)
+        .then_some(MatchedPolicy {
+            loaded,
+            reason: "Matched vector semantic candidate.".to_string(),
+            score: MatchScore {
+                rank: 10,
+                path_specificity: 0,
+            },
+            source: PolicyMatchSource::Vector,
+        })
+}
+
+fn repo_scope_matches(applies: &AppliesWhen, intent: &TaskIntent) -> bool {
+    let Some(repo) = &intent.repo else {
+        return true;
+    };
+    applies.repos.is_empty() || applies.repos.iter().any(|candidate| candidate == repo)
 }
 
 fn matches_task_type(
@@ -2234,6 +2397,9 @@ No task summary provided.
                 estimate_method: Some("approx_words".into()),
                 candidate_policies_considered: Some(14),
                 candidate_policies_omitted: Some(9),
+                exact_candidate_policies: Some(14),
+                bm25_candidate_policies: Some(0),
+                vector_candidate_policies: None,
                 reason: Some(
                     "Lower priority or duplicate non-mandatory guidance excluded by context budget."
                         .into(),
@@ -2720,6 +2886,99 @@ No task summary provided.
             .warnings
             .iter()
             .any(|warning| warning.contains("generated_file")));
+    }
+
+    #[test]
+    fn bm25_candidates_apply_only_after_structured_filters_are_compatible() {
+        let policy = test_policy(
+            "policy.docs",
+            AppliesWhen {
+                paths: vec!["docs/**".into()],
+                ..AppliesWhen::default()
+            },
+            "Use documentation retrieval guidance.",
+        );
+        let bm25_candidate_ids = BTreeSet::from(["policy.docs".to_string()]);
+        let intent = TaskIntent {
+            repo: None,
+            branch: None,
+            task: None,
+            files: Vec::new(),
+            detected: None,
+            risk_flags: Vec::new(),
+            expected_commands: Vec::new(),
+            expected_check_ids: Vec::new(),
+            output_budget: None,
+        };
+
+        let bundle = build_instruction_bundle_with_bm25_candidates(
+            &intent,
+            &[policy],
+            default_build_options(),
+            &bm25_candidate_ids,
+        )
+        .expect("bundle should build");
+
+        assert_eq!(bundle.instructions.len(), 1);
+        assert_eq!(
+            bundle.instructions[0].text,
+            "Use documentation retrieval guidance."
+        );
+        assert_eq!(bundle.context_budget.exact_candidate_policies, Some(0));
+        assert_eq!(bundle.context_budget.bm25_candidate_policies, Some(1));
+        assert!(bundle.explanations[0]
+            .reason
+            .contains("BM25 keyword candidate"));
+    }
+
+    #[test]
+    fn vector_candidates_do_not_bypass_path_applicability() {
+        let mut exact = test_policy(
+            "policy.exact",
+            AppliesWhen {
+                paths: vec!["src/payments/**".into()],
+                ..AppliesWhen::default()
+            },
+            "Use the exact payment workflow.",
+        );
+        exact.policy.priority = Some(90);
+        let mut vector = test_policy(
+            "policy.vector",
+            AppliesWhen {
+                paths: vec!["docs/legacy/**".into()],
+                ..AppliesWhen::default()
+            },
+            "Use candidate-only semantic refund guidance.",
+        );
+        vector.policy.priority = Some(10);
+        let vector_candidate_ids = BTreeSet::from(["policy.vector".to_string()]);
+
+        let bundle = build_instruction_bundle_with_retrieval_candidates(
+            &test_intent(vec!["src/payments/refunds.ts"]),
+            &[vector, exact],
+            BundleBuildOptions {
+                max_tokens: None,
+                max_instructions: Some(1),
+                max_required_checks: None,
+                max_blocked_actions: None,
+            },
+            &BTreeSet::new(),
+            &vector_candidate_ids,
+        )
+        .expect("bundle should build");
+
+        assert_eq!(bundle.instructions.len(), 1);
+        assert_eq!(
+            bundle.instructions[0].text,
+            "Use the exact payment workflow."
+        );
+        assert_eq!(bundle.context_budget.exact_candidate_policies, Some(1));
+        assert_eq!(bundle.context_budget.vector_candidate_policies, Some(0));
+        assert!(bundle.explanations[0].reason.contains("Matched path"));
+        assert!(!bundle
+            .instructions
+            .iter()
+            .any(|instruction| instruction.text.contains("semantic refund")));
     }
 
     #[test]
