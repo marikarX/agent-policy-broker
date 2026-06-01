@@ -1,0 +1,60 @@
+{
+  "instruction_sources": [
+    {
+      "path": ".cursor/rules/root.md",
+      "scope": ".",
+      "type": "cursor_rule",
+      "source_kind": "cursor",
+      "is_root": true,
+      "is_nested": false
+    },
+    {
+      "path": ".github/copilot-instructions.md",
+      "scope": ".",
+      "type": "copilot_instructions",
+      "source_kind": "copilot",
+      "is_root": true,
+      "is_nested": false
+    },
+    {
+      "path": "AGENTS.md",
+      "scope": ".",
+      "type": "agents_md",
+      "source_kind": "agents",
+      "is_root": true,
+      "is_nested": false
+    },
+    {
+      "path": "CLAUDE.md",
+      "scope": ".",
+      "type": "claude_md",
+      "source_kind": "claude",
+      "is_root": true,
+      "is_nested": false
+    },
+    {
+      "path": "backend/AGENTS.md",
+      "scope": "backend/**",
+      "type": "agents_md",
+      "source_kind": "agents",
+      "is_root": false,
+      "is_nested": true
+    },
+    {
+      "path": "backend/payments/CLAUDE.md",
+      "scope": "backend/payments/**",
+      "type": "claude_md",
+      "source_kind": "claude",
+      "is_root": false,
+      "is_nested": true
+    },
+    {
+      "path": "frontend/.cursor/rules/react.md",
+      "scope": "frontend/**",
+      "type": "cursor_rule",
+      "source_kind": "cursor",
+      "is_root": false,
+      "is_nested": true
+    }
+  ]
+}

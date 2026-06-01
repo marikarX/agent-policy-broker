@@ -2,6 +2,8 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use agent_policy_discover::discover_json;
+
 #[derive(Debug, Parser)]
 #[command(name = "agent-policy", version, about = "Agent Policy Broker CLI")]
 struct Cli {
@@ -67,27 +69,51 @@ enum RegistryCommands {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    run(cli)
+    match run(cli) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error:#}");
+            ExitCode::from(1)
+        }
+    }
 }
 
-fn run(cli: Cli) -> ExitCode {
-    let command_name = match cli.command {
-        Commands::Get => "get",
-        Commands::Discover => "discover",
-        Commands::Validate => "validate",
-        Commands::Inspect => "inspect",
-        Commands::Migrate => "migrate",
-        Commands::Index => "index",
-        Commands::Serve => "serve",
+fn run(cli: Cli) -> anyhow::Result<()> {
+    match cli.command {
+        Commands::Discover => run_discover(&cli.global),
+        Commands::Get => not_implemented("get"),
+        Commands::Validate => not_implemented("validate"),
+        Commands::Inspect => not_implemented("inspect"),
+        Commands::Migrate => not_implemented("migrate"),
+        Commands::Index => not_implemented("index"),
+        Commands::Serve => not_implemented("serve"),
         Commands::Registry(registry) => match registry.command {
-            RegistryCommands::Sync => "registry sync",
+            RegistryCommands::Sync => not_implemented("registry sync"),
         },
-    };
+    }
+}
 
-    eprintln!(
+fn run_discover(global: &GlobalArgs) -> anyhow::Result<()> {
+    let repo = global
+        .repo
+        .as_deref()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    match global.format.clone().unwrap_or(OutputFormat::Json) {
+        OutputFormat::Json => {
+            let json = discover_json(repo)?;
+            println!("{}", json);
+            Ok(())
+        }
+        OutputFormat::Markdown => {
+            anyhow::bail!("markdown output is not implemented for `discover`; use `--format json`")
+        }
+    }
+}
+
+fn not_implemented(command_name: &str) -> anyhow::Result<()> {
+    anyhow::bail!(
         "command `{command_name}` is not implemented yet. Use `agent-policy {command_name} --help` for usage details."
-    );
-    ExitCode::from(1)
+    )
 }
 
 #[cfg(test)]
@@ -121,8 +147,8 @@ mod tests {
 
     #[test]
     fn parse_discover_with_json_format() {
-        let cli =
-            Cli::try_parse_from(["agent-policy", "discover", "--format", "json"]).expect("parse discover");
+        let cli = Cli::try_parse_from(["agent-policy", "discover", "--format", "json"])
+            .expect("parse discover");
         assert!(matches!(cli.global.format, Some(OutputFormat::Json)));
         assert!(matches!(cli.command, Commands::Discover));
     }
