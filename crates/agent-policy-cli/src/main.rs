@@ -1,7 +1,7 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -205,6 +205,12 @@ struct IndexManifestSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct IndexManifestIndexes {
     metadata: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GetPolicyLoad {
+    policies: Vec<LoadedPolicy>,
+    warnings: Vec<String>,
 }
 
 fn run_registry_sync(global: &GlobalArgs) -> anyhow::Result<()> {
@@ -2568,18 +2574,15 @@ fn run_get(global: &GlobalArgs, args: GetArgs) -> anyhow::Result<()> {
     };
 
     let intent = build_task_intent(repo, &config, &args);
-    let mut policies = match &config.registry {
-        Some(registry) => load_registry_policies(repo, registry)?,
-        None => Vec::new(),
-    };
-    policies.extend(load_policies_from_dirs(repo, &config.local_policies)?);
+    let loaded = load_get_policies(repo, &config)?;
+    let mut policies = loaded.policies;
     let discovered_sources = discover(repo)?;
     policies.extend(markdown_candidate_policies(
         repo,
         &discovered_sources,
         &intent.files,
     ));
-    let bundle = build_instruction_bundle(
+    let mut bundle = build_instruction_bundle(
         &intent,
         &policies,
         BundleBuildOptions {
@@ -2591,6 +2594,7 @@ fn run_get(global: &GlobalArgs, args: GetArgs) -> anyhow::Result<()> {
             max_blocked_actions: Some(config.output_budget.max_blocked_actions),
         },
     )?;
+    bundle.warnings.extend(loaded.warnings);
 
     match global.format.clone().unwrap_or(OutputFormat::Json) {
         OutputFormat::Json => {
@@ -2602,6 +2606,110 @@ fn run_get(global: &GlobalArgs, args: GetArgs) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn load_get_policies(
+    repo: &Path,
+    config: &agent_policy_config::AgentPolicyConfig,
+) -> anyhow::Result<GetPolicyLoad> {
+    load_get_policies_with_cache_dir(repo, config, &agent_policy_cache_dir()?)
+}
+
+fn load_get_policies_with_cache_dir(
+    repo: &Path,
+    config: &agent_policy_config::AgentPolicyConfig,
+    cache_dir: &Path,
+) -> anyhow::Result<GetPolicyLoad> {
+    let mut warnings = Vec::new();
+    let mut policies = Vec::new();
+
+    if let Some(registry) = &config.registry {
+        let source = index_registry_source(repo, registry)?;
+        let indexed_ids = get_indexed_policy_ids(cache_dir, &source, &mut warnings)?;
+        let registry_policies = load_registry_policies(repo, registry)?;
+        policies.extend(filter_loaded_policies(
+            registry_policies,
+            indexed_ids.as_ref(),
+        ));
+        policies.extend(load_policies_from_dirs(repo, &config.local_policies)?);
+    } else {
+        let source = index_repo_source(repo)?;
+        let indexed_ids = get_indexed_policy_ids(cache_dir, &source, &mut warnings)?;
+        let local_policies = load_policies_from_dirs(repo, &config.local_policies)?;
+        policies.extend(filter_loaded_policies(local_policies, indexed_ids.as_ref()));
+    }
+
+    Ok(GetPolicyLoad { policies, warnings })
+}
+
+fn get_indexed_policy_ids(
+    cache_dir: &Path,
+    source: &IndexSource,
+    warnings: &mut Vec<String>,
+) -> anyhow::Result<Option<BTreeSet<String>>> {
+    let index_dir = index_dir_for_source(cache_dir, &source.name);
+    let manifest_path = index_dir.join("manifest.json");
+    let manifest = match read_index_manifest(&manifest_path) {
+        Ok(Some(manifest)) => manifest,
+        Ok(None) => {
+            warnings.push(format!(
+                "Metadata index missing at {}; loaded policies directly.",
+                manifest_path.display()
+            ));
+            return Ok(None);
+        }
+        Err(error) => {
+            warnings.push(format!(
+                "Metadata index manifest at {} is invalid or unreadable ({error:#}); loaded policies directly.",
+                manifest_path.display()
+            ));
+            return Ok(None);
+        }
+    };
+
+    if index_manifest_is_stale(&manifest, source) {
+        warnings.push(format!(
+            "Metadata index at {} is stale; loaded policies directly.",
+            index_dir.display()
+        ));
+        return Ok(None);
+    }
+
+    let metadata_path = index_dir.join(&manifest.indexes.metadata);
+    match read_indexed_policy_ids(&metadata_path) {
+        Ok(ids) => Ok(Some(ids)),
+        Err(error) => {
+            warnings.push(format!(
+                "Metadata index at {} is invalid or unreadable ({error:#}); loaded policies directly.",
+                metadata_path.display()
+            ));
+            Ok(None)
+        }
+    }
+}
+
+fn read_indexed_policy_ids(path: &Path) -> anyhow::Result<BTreeSet<String>> {
+    let connection = Connection::open(path)
+        .with_context(|| format!("failed to open metadata index {}", path.display()))?;
+    let mut statement = connection
+        .prepare("SELECT id FROM policies WHERE status = 'active' ORDER BY id")
+        .with_context(|| format!("failed to query metadata index {}", path.display()))?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    rows.collect::<Result<BTreeSet<_>, _>>()
+        .map_err(anyhow::Error::from)
+}
+
+fn filter_loaded_policies(
+    policies: Vec<LoadedPolicy>,
+    indexed_ids: Option<&BTreeSet<String>>,
+) -> Vec<LoadedPolicy> {
+    match indexed_ids {
+        Some(ids) => policies
+            .into_iter()
+            .filter(|loaded| ids.contains(&loaded.policy.id))
+            .collect(),
+        None => policies,
+    }
 }
 
 fn load_registry_policies(
@@ -2902,9 +3010,9 @@ fn not_implemented(command_name: &str) -> anyhow::Result<()> {
 mod tests {
     use super::{
         build_metadata_index_with_cache_dir, detect_inspection_conflicts,
-        detect_inspection_duplicates, inspect_repo, load_registry_policies,
-        markdown_candidate_policies, migration_dry_run_report, render_inspection_json,
-        render_inspection_markdown, render_migration_dry_run_json,
+        detect_inspection_duplicates, inspect_repo, load_get_policies_with_cache_dir,
+        load_registry_policies, markdown_candidate_policies, migration_dry_run_report,
+        render_inspection_json, render_inspection_markdown, render_migration_dry_run_json,
         render_migration_dry_run_markdown, render_registry_sync_json,
         render_registry_sync_markdown, render_validation_markdown, run, scope_matches_task_files,
         sync_registry, validate_repo, Cli, Commands, GlobalArgs, IndexManifest,
@@ -2915,8 +3023,8 @@ mod tests {
         load_config, AgentPolicyConfig, RegistryConfig, RegistrySyncConfig, SyncMode,
     };
     use agent_policy_core::{
-        build_instruction_bundle, BundleBuildOptions, DetectedContext, OutputBudget, TaskDetails,
-        TaskIntent,
+        build_instruction_bundle, load_policies_from_dirs, render_bundle_json, BundleBuildOptions,
+        DetectedContext, LoadedPolicy, OutputBudget, TaskDetails, TaskIntent,
     };
     use agent_policy_discover::discover;
     use clap::{error::ErrorKind, CommandFactory, Parser};
@@ -3404,6 +3512,95 @@ instructions:
     }
 
     #[test]
+    fn get_uses_valid_metadata_index_for_candidate_lookup() {
+        let temp = TempDir::new("get-indexed");
+        let repo = temp.path().join("repo");
+        write_get_policy_fixture(&repo);
+        let config = AgentPolicyConfig::default();
+        let cache_dir = temp.path().join("cache");
+        build_metadata_index_with_cache_dir(&repo, &config, &cache_dir).expect("build index");
+
+        let indexed = load_get_policies_with_cache_dir(&repo, &config, &cache_dir)
+            .expect("load indexed policies");
+        let direct =
+            load_policies_from_dirs(&repo, &config.local_policies).expect("load direct policies");
+
+        assert!(indexed.warnings.is_empty());
+        assert_eq!(
+            policy_ids(&indexed.policies),
+            vec!["org.get.active".to_string()]
+        );
+        assert_eq!(
+            get_bundle_json(&indexed.policies),
+            get_bundle_json(&direct),
+            "indexed lookup should produce the same bundle content as direct loading"
+        );
+    }
+
+    #[test]
+    fn get_falls_back_when_metadata_index_is_missing() {
+        let temp = TempDir::new("get-missing-index");
+        let repo = temp.path().join("repo");
+        write_get_policy_fixture(&repo);
+        let config = AgentPolicyConfig::default();
+        let cache_dir = temp.path().join("cache");
+
+        let loaded = load_get_policies_with_cache_dir(&repo, &config, &cache_dir)
+            .expect("load direct policies without index");
+
+        assert!(loaded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Metadata index missing")));
+        assert_eq!(
+            get_bundle_json(&loaded.policies),
+            get_bundle_json(
+                &load_policies_from_dirs(&repo, &config.local_policies)
+                    .expect("load direct policies")
+            )
+        );
+    }
+
+    #[test]
+    fn get_falls_back_when_metadata_index_is_stale() {
+        let temp = TempDir::new("get-stale-index");
+        let repo = temp.path().join("repo");
+        write_get_policy_fixture(&repo);
+        let config = AgentPolicyConfig::default();
+        let cache_dir = temp.path().join("cache");
+        let report =
+            build_metadata_index_with_cache_dir(&repo, &config, &cache_dir).expect("build index");
+        let mut manifest: IndexManifest = serde_json::from_str(
+            &fs::read_to_string(&report.manifest_path).expect("read manifest"),
+        )
+        .expect("parse manifest");
+        manifest.source.path = temp.path().join("other-repo").display().to_string();
+        fs::write(
+            &report.manifest_path,
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&manifest).expect("serialize manifest")
+            ),
+        )
+        .expect("write stale manifest");
+
+        let loaded = load_get_policies_with_cache_dir(&repo, &config, &cache_dir)
+            .expect("load policies with stale index");
+
+        assert!(loaded
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("is stale")));
+        assert_eq!(
+            get_bundle_json(&loaded.policies),
+            get_bundle_json(
+                &load_policies_from_dirs(&repo, &config.local_policies)
+                    .expect("load direct policies")
+            )
+        );
+    }
+
+    #[test]
     fn inspect_nested_fixture_reports_sources_candidates_and_migration_groups() {
         let repo = fixture_repo("nested-instructions");
         let discovered = discover(&repo).expect("discover fixture repo");
@@ -3755,6 +3952,85 @@ instructions:
             migration_class,
             target_policy: Some("test.policy".into()),
         }
+    }
+
+    fn write_get_policy_fixture(repo: &Path) {
+        let policies_dir = repo.join(".agent-policy").join("policies");
+        fs::create_dir_all(&policies_dir).expect("create policies dir");
+        fs::write(
+            policies_dir.join("active.yaml"),
+            r#"id: org.get.active
+version: 1
+status: active
+priority: 10
+applies_when:
+  paths:
+    - crates/**
+  languages:
+    - rust
+instructions:
+  - Use the get metadata index when it is valid.
+"#,
+        )
+        .expect("write active policy");
+        fs::write(
+            policies_dir.join("draft.yaml"),
+            r#"id: org.get.draft
+version: 1
+status: draft
+applies_when: {}
+instructions:
+  - Draft guidance should not appear in get bundles.
+"#,
+        )
+        .expect("write draft policy");
+    }
+
+    fn policy_ids(policies: &[LoadedPolicy]) -> Vec<String> {
+        policies
+            .iter()
+            .map(|loaded| loaded.policy.id.clone())
+            .collect()
+    }
+
+    fn get_bundle_json(policies: &[LoadedPolicy]) -> String {
+        let intent = TaskIntent {
+            repo: Some("repo".to_string()),
+            branch: None,
+            task: Some(TaskDetails {
+                summary: Some("implement indexed get".to_string()),
+                task_type: None,
+            }),
+            files: vec!["crates/agent-policy-cli/src/main.rs".to_string()],
+            detected: Some(DetectedContext {
+                languages: vec!["rust".to_string()],
+                frameworks: Vec::new(),
+                package_manager: None,
+            }),
+            risk_flags: Vec::new(),
+            expected_commands: Vec::new(),
+            expected_check_ids: Vec::new(),
+            output_budget: Some(OutputBudget {
+                max_tokens: Some(2000),
+                max_instructions: Some(10),
+                max_required_checks: Some(10),
+                max_blocked_actions: Some(10),
+                include_examples: Some(false),
+                include_explanations: Some("brief".to_string()),
+            }),
+        };
+        let bundle = build_instruction_bundle(
+            &intent,
+            policies,
+            BundleBuildOptions {
+                max_tokens: Some(2000),
+                max_instructions: Some(10),
+                max_required_checks: Some(10),
+                max_blocked_actions: Some(10),
+            },
+        )
+        .expect("build bundle");
+        render_bundle_json(&bundle).expect("render bundle json")
     }
 
     fn fixture_repo(name: &str) -> PathBuf {
