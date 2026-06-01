@@ -607,6 +607,7 @@ struct InstructionConflictCandidate {
     path_specificity: u32,
     source_path: PathBuf,
     package_manager: Option<&'static str>,
+    mandatory_safety: bool,
     generated_file_mode: GeneratedFileMode,
 }
 
@@ -658,6 +659,8 @@ fn resolve_instruction_conflicts(matched: &[MatchedPolicy<'_>]) -> Result<Confli
                 path_specificity: matched_policy.score.path_specificity,
                 source_path: matched_policy.loaded.source_path.clone(),
                 package_manager: package_manager_preference(instruction),
+                mandatory_safety: is_global_policy(&policy.applies_when)
+                    && is_safety_rule(instruction),
                 generated_file_mode: generated_file_mode(instruction),
             });
         }
@@ -707,6 +710,14 @@ fn resolve_package_manager_conflicts(
             } else {
                 (*right, *left)
             };
+            if loser.mandatory_safety {
+                resolution.warnings.push(format!(
+                    "Conflict warning: package_manager guidance from `{}` conflicts with mandatory safety instruction from `{}`; mandatory safety controls remain included.",
+                    winner.source.0, loser.source.0
+                ));
+                continue;
+            }
+
             if !resolution.omitted_instructions.insert(ConflictItemKey {
                 source: loser.source.0.clone(),
                 text: loser.text.clone(),
@@ -2472,6 +2483,44 @@ No task summary provided.
             vec!["Use npm for package commands in packages/web."]
         );
         assert_eq!(bundle.context_budget.candidate_policies_omitted, Some(0));
+    }
+
+    #[test]
+    fn package_manager_conflict_keeps_global_safety_instruction() {
+        let mut global = test_policy(
+            "global.safety",
+            AppliesWhen::default(),
+            "Never run npm install scripts when secrets are present.",
+        );
+        global.policy.priority = Some(90);
+        let local = test_policy(
+            "local.package",
+            AppliesWhen {
+                paths: vec!["frontend/**".into()],
+                ..AppliesWhen::default()
+            },
+            "Use pnpm for frontend package commands.",
+        );
+
+        let bundle = build_instruction_bundle(
+            &test_intent(vec!["frontend/src/App.tsx"]),
+            &[global, local],
+            default_build_options(),
+        )
+        .expect("bundle should build");
+
+        let instructions = bundle
+            .instructions
+            .iter()
+            .map(|instruction| instruction.text.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(instructions.contains(&"Never run npm install scripts when secrets are present."));
+        assert!(instructions.contains(&"Use pnpm for frontend package commands."));
+        assert!(bundle
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("mandatory safety controls remain included")));
     }
 
     #[test]
