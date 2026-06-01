@@ -2,10 +2,10 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 use agent_policy_config::{
-    load_config, load_config_from_path, validate_config_file, RegistryConfig,
+    load_config, load_config_from_path, validate_config_file, RegistryConfig, SyncMode,
 };
 use agent_policy_core::{
     build_instruction_bundle, collect_policy_files, load_policies_from_dirs,
@@ -127,8 +127,286 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Index => not_implemented("index"),
         Commands::Serve => not_implemented("serve"),
         Commands::Registry(registry) => match registry.command {
-            RegistryCommands::Sync => not_implemented("registry sync"),
+            RegistryCommands::Sync => run_registry_sync(&cli.global),
         },
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RegistrySyncReport {
+    cache_dir: PathBuf,
+    mode: SyncMode,
+    status: RegistrySyncStatus,
+    commit: Option<String>,
+    requested_ref: String,
+    message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegistrySyncStatus {
+    LocalPath,
+    Cached,
+    Offline,
+    Pinned,
+}
+
+fn run_registry_sync(global: &GlobalArgs) -> anyhow::Result<()> {
+    let repo = global.repo.as_deref().unwrap_or_else(|| Path::new("."));
+    let config = match &global.config {
+        Some(path) => load_config_from_path(path)?,
+        None => load_config(repo)?,
+    };
+    let registry = config
+        .registry
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("registry_not_found: no policy registry is configured"))?;
+    let report = sync_registry(repo, registry, global.no_network)?;
+
+    if !global.quiet {
+        match global.format.clone().unwrap_or(OutputFormat::Markdown) {
+            OutputFormat::Json => println!("{}", render_registry_sync_json(&report)),
+            OutputFormat::Markdown => print!("{}", render_registry_sync_markdown(&report)),
+        }
+    }
+
+    Ok(())
+}
+
+fn sync_registry(
+    repo: &Path,
+    registry: &RegistryConfig,
+    no_network: bool,
+) -> anyhow::Result<RegistrySyncReport> {
+    if registry.registry_type != "git" {
+        anyhow::bail!(
+            "unsupported registry type `{}`; only git is supported",
+            registry.registry_type
+        );
+    }
+
+    let cache_dir = resolve_configured_path(repo, &registry.cache_dir)?;
+    let url_path = local_registry_url_path(repo, &registry.url)?;
+    if is_local_path_registry(&cache_dir, url_path.as_deref()) {
+        return Ok(RegistrySyncReport {
+            cache_dir,
+            mode: registry.sync.mode,
+            status: RegistrySyncStatus::LocalPath,
+            commit: None,
+            requested_ref: registry.r#ref.clone(),
+            message: "local path registry; nothing to sync".to_string(),
+        });
+    }
+
+    if !cache_dir.exists() {
+        let mode_hint = if registry.sync.mode == SyncMode::Offline {
+            "offline mode cannot clone or fetch"
+        } else if no_network {
+            "--no-network is set"
+        } else {
+            "network clone is not implemented"
+        };
+        anyhow::bail!(
+            "registry_not_found: registry cache directory {} does not exist ({mode_hint})",
+            cache_dir.display()
+        );
+    }
+    if !cache_dir.is_dir() {
+        anyhow::bail!(
+            "registry_not_found: registry cache path {} is not a directory",
+            cache_dir.display()
+        );
+    }
+    if !is_git_worktree(&cache_dir) {
+        anyhow::bail!(
+            "registry_not_found: registry cache {} is not a Git worktree",
+            cache_dir.display()
+        );
+    }
+
+    let head = git_rev_parse(&cache_dir, "HEAD")?;
+    let status = match registry.sync.mode {
+        SyncMode::Pinned => {
+            validate_pinned_ref(&cache_dir, &registry.r#ref, &head)?;
+            RegistrySyncStatus::Pinned
+        }
+        SyncMode::Offline => {
+            validate_requested_ref_if_available(&cache_dir, &registry.r#ref, &head)?;
+            RegistrySyncStatus::Offline
+        }
+        SyncMode::Manual | SyncMode::Auto => {
+            validate_requested_ref_if_available(&cache_dir, &registry.r#ref, &head)?;
+            if no_network {
+                RegistrySyncStatus::Offline
+            } else {
+                RegistrySyncStatus::Cached
+            }
+        }
+    };
+
+    let message = match status {
+        RegistrySyncStatus::Pinned => "pinned registry cache matches requested ref",
+        RegistrySyncStatus::Offline => "using cached registry without network access",
+        RegistrySyncStatus::Cached => "using cached registry; network fetch is not implemented",
+        RegistrySyncStatus::LocalPath => "local path registry; nothing to sync",
+    }
+    .to_string();
+
+    Ok(RegistrySyncReport {
+        cache_dir,
+        mode: registry.sync.mode,
+        status,
+        commit: Some(head),
+        requested_ref: registry.r#ref.clone(),
+        message,
+    })
+}
+
+fn local_registry_url_path(repo: &Path, url: &str) -> anyhow::Result<Option<PathBuf>> {
+    if let Some(path) = url.strip_prefix("file://") {
+        return Ok(Some(resolve_configured_path(repo, path)?));
+    }
+    if looks_like_remote_git_url(url) {
+        return Ok(None);
+    }
+    Ok(Some(resolve_configured_path(repo, url)?))
+}
+
+fn is_local_path_registry(cache_dir: &Path, url_path: Option<&Path>) -> bool {
+    match url_path {
+        Some(path) => {
+            path == cache_dir
+                && cache_dir.exists()
+                && cache_dir.is_dir()
+                && !looks_like_remote_git_url(&path.display().to_string())
+        }
+        None => false,
+    }
+}
+
+fn is_git_worktree(path: &Path) -> bool {
+    path.join(".git").exists()
+}
+
+fn validate_pinned_ref(cache_dir: &Path, requested_ref: &str, head: &str) -> anyhow::Result<()> {
+    if is_full_sha(requested_ref) {
+        if head == requested_ref {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "registry_pinned_mismatch: registry cache {} is at commit {}, expected {}",
+            cache_dir.display(),
+            head,
+            requested_ref
+        );
+    }
+    validate_requested_ref_if_available(cache_dir, requested_ref, head)
+}
+
+fn validate_requested_ref_if_available(
+    cache_dir: &Path,
+    requested_ref: &str,
+    head: &str,
+) -> anyhow::Result<()> {
+    if is_full_sha(requested_ref) {
+        if head == requested_ref {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "registry_ref_mismatch: registry cache {} is at commit {}, expected {}",
+            cache_dir.display(),
+            head,
+            requested_ref
+        );
+    }
+
+    match git_rev_parse(cache_dir, &format!("{requested_ref}^{{commit}}")) {
+        Ok(ref_commit) if ref_commit == head => Ok(()),
+        Ok(ref_commit) => anyhow::bail!(
+            "registry_ref_mismatch: registry cache {} is at commit {}, but ref {} points to {}",
+            cache_dir.display(),
+            head,
+            requested_ref,
+            ref_commit
+        ),
+        Err(_) => Ok(()),
+    }
+}
+
+fn git_rev_parse(repo: &Path, rev: &str) -> anyhow::Result<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .arg("rev-parse")
+        .arg("--verify")
+        .arg(rev)
+        .output()?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git rev-parse failed for `{}` in {}: {}",
+            rev,
+            repo.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn is_full_sha(value: &str) -> bool {
+    value.len() == 40 && value.chars().all(|character| character.is_ascii_hexdigit())
+}
+
+fn render_registry_sync_json(report: &RegistrySyncReport) -> String {
+    let commit = report
+        .commit
+        .as_ref()
+        .map(|commit| format!("\"{}\"", json_escape(commit)))
+        .unwrap_or_else(|| "null".to_string());
+    format!(
+        "{{\n  \"status\": \"{}\",\n  \"mode\": \"{}\",\n  \"cache_dir\": \"{}\",\n  \"ref\": \"{}\",\n  \"commit\": {},\n  \"message\": \"{}\"\n}}\n",
+        registry_sync_status_name(report.status),
+        sync_mode_name(report.mode),
+        json_escape(&report.cache_dir.display().to_string()),
+        json_escape(&report.requested_ref),
+        commit,
+        json_escape(&report.message)
+    )
+}
+
+fn render_registry_sync_markdown(report: &RegistrySyncReport) -> String {
+    let mut out = String::new();
+    out.push_str("# Registry Sync\n\n");
+    out.push_str(&format!(
+        "- Status: `{}`\n",
+        registry_sync_status_name(report.status)
+    ));
+    out.push_str(&format!("- Mode: `{}`\n", sync_mode_name(report.mode)));
+    out.push_str(&format!("- Cache: `{}`\n", report.cache_dir.display()));
+    out.push_str(&format!(
+        "- Ref: `{}`\n",
+        markdown_inline(&report.requested_ref)
+    ));
+    if let Some(commit) = &report.commit {
+        out.push_str(&format!("- Commit: `{}`\n", commit));
+    }
+    out.push_str(&format!("- Message: {}\n", report.message));
+    out
+}
+
+fn registry_sync_status_name(status: RegistrySyncStatus) -> &'static str {
+    match status {
+        RegistrySyncStatus::LocalPath => "local_path",
+        RegistrySyncStatus::Cached => "cached",
+        RegistrySyncStatus::Offline => "offline",
+        RegistrySyncStatus::Pinned => "pinned",
+    }
+}
+
+fn sync_mode_name(mode: SyncMode) -> &'static str {
+    match mode {
+        SyncMode::Manual => "manual",
+        SyncMode::Auto => "auto",
+        SyncMode::Pinned => "pinned",
+        SyncMode::Offline => "offline",
     }
 }
 
@@ -2221,11 +2499,12 @@ mod tests {
         detect_inspection_conflicts, detect_inspection_duplicates, inspect_repo,
         load_registry_policies, markdown_candidate_policies, migration_dry_run_report,
         render_inspection_json, render_inspection_markdown, render_migration_dry_run_json,
-        render_migration_dry_run_markdown, render_validation_markdown, run,
-        scope_matches_task_files, validate_repo, Cli, Commands, GlobalArgs, InspectionCandidate,
-        MigrationClass, OutputFormat, RegistryCommands, ValidationStatus,
+        render_migration_dry_run_markdown, render_registry_sync_json,
+        render_registry_sync_markdown, render_validation_markdown, run, scope_matches_task_files,
+        sync_registry, validate_repo, Cli, Commands, GlobalArgs, InspectionCandidate,
+        MigrationClass, OutputFormat, RegistryCommands, RegistrySyncStatus, ValidationStatus,
     };
-    use agent_policy_config::load_config;
+    use agent_policy_config::{load_config, RegistryConfig, RegistrySyncConfig, SyncMode};
     use agent_policy_core::{
         build_instruction_bundle, BundleBuildOptions, DetectedContext, OutputBudget, TaskDetails,
         TaskIntent,
@@ -2235,6 +2514,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -2440,6 +2720,113 @@ mod tests {
                 .map(|source| source.0.as_str()),
             Some("local-registry:org.security.secrets@3#0123456789ab")
         );
+    }
+
+    #[test]
+    fn registry_sync_local_path_registry_is_noop_success() {
+        let repo = fixture_repo("registry-app");
+        let config = load_config(&repo).expect("registry config should load");
+        let registry = config.registry.expect("registry should be configured");
+
+        let report = sync_registry(&repo, &registry, true).expect("sync local path registry");
+
+        assert_eq!(report.status, RegistrySyncStatus::LocalPath);
+        assert_eq!(report.mode, SyncMode::Manual);
+        assert!(report.commit.is_none());
+        assert!(report.message.contains("nothing to sync"));
+    }
+
+    #[test]
+    fn registry_sync_offline_uses_cached_git_without_fetching() {
+        let temp = TempDir::new("registry-sync-offline");
+        let repo = temp.path();
+        let cache_dir = repo.join("registry-cache");
+        let head = init_git_registry(&cache_dir);
+        let registry = test_registry(&cache_dir, "main", SyncMode::Offline);
+
+        let report = sync_registry(repo, &registry, false).expect("offline sync");
+
+        assert_eq!(report.status, RegistrySyncStatus::Offline);
+        assert_eq!(report.commit.as_deref(), Some(head.as_str()));
+        assert_eq!(report.requested_ref, "main");
+        assert!(render_registry_sync_markdown(&report).contains("without network access"));
+    }
+
+    #[test]
+    fn registry_sync_no_network_uses_cached_git_without_fetching() {
+        let temp = TempDir::new("registry-sync-no-network");
+        let repo = temp.path();
+        let cache_dir = repo.join("registry-cache");
+        let head = init_git_registry(&cache_dir);
+        let mut registry = test_registry(&cache_dir, "main", SyncMode::Manual);
+        registry.url = "https://example.invalid/company/registry.git".to_string();
+
+        let report = sync_registry(repo, &registry, true).expect("no-network sync");
+
+        assert_eq!(report.status, RegistrySyncStatus::Offline);
+        assert_eq!(report.commit.as_deref(), Some(head.as_str()));
+        assert!(render_registry_sync_json(&report).contains("\"status\": \"offline\""));
+    }
+
+    #[test]
+    fn registry_sync_pinned_validates_current_commit() {
+        let temp = TempDir::new("registry-sync-pinned");
+        let repo = temp.path();
+        let cache_dir = repo.join("registry-cache");
+        let head = init_git_registry(&cache_dir);
+        let registry = test_registry(&cache_dir, &head, SyncMode::Pinned);
+
+        let report = sync_registry(repo, &registry, false).expect("pinned sync");
+
+        assert_eq!(report.status, RegistrySyncStatus::Pinned);
+        assert_eq!(report.commit.as_deref(), Some(head.as_str()));
+    }
+
+    #[test]
+    fn registry_sync_pinned_rejects_mismatched_commit() {
+        let temp = TempDir::new("registry-sync-pinned-mismatch");
+        let repo = temp.path();
+        let cache_dir = repo.join("registry-cache");
+        init_git_registry(&cache_dir);
+        let wrong_commit = "0123456789abcdef0123456789abcdef01234567";
+        let registry = test_registry(&cache_dir, wrong_commit, SyncMode::Pinned);
+
+        let error = sync_registry(repo, &registry, false).expect_err("pinned mismatch");
+
+        assert!(format!("{error:#}").contains("registry_pinned_mismatch"));
+        assert!(format!("{error:#}").contains(wrong_commit));
+    }
+
+    #[test]
+    fn registry_sync_missing_registry_reports_useful_error() {
+        let temp = TempDir::new("registry-sync-missing");
+        let repo = temp.path();
+        let cache_dir = repo.join("missing-cache");
+        let registry = test_registry(&cache_dir, "main", SyncMode::Offline);
+
+        let error = sync_registry(repo, &registry, false).expect_err("missing cache");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("registry_not_found"));
+        assert!(message.contains("offline mode cannot clone or fetch"));
+        assert!(message.contains("missing-cache"));
+    }
+
+    #[test]
+    fn registry_sync_requires_configured_registry() {
+        let repo = fixture_repo("payments-repo");
+        let cli = Cli::try_parse_from([
+            "agent-policy",
+            "--repo",
+            repo.to_str().expect("utf8 repo"),
+            "registry",
+            "sync",
+        ])
+        .expect("parse registry sync");
+
+        let error = run(cli).expect_err("missing configured registry");
+
+        assert!(format!("{error:#}").contains("registry_not_found"));
     }
 
     #[test]
@@ -2806,6 +3193,35 @@ mod tests {
         path: PathBuf,
     }
 
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "agent-policy-cli-{name}-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("create temp dir");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
     impl TempRepo {
         fn copy_fixture(name: &str) -> Self {
             let nonce = SystemTime::now()
@@ -2878,6 +3294,77 @@ mod tests {
                 contents.insert(relative, fs::read_to_string(&path).expect("read repo file"));
             }
         }
+    }
+
+    fn test_registry(cache_dir: &Path, requested_ref: &str, mode: SyncMode) -> RegistryConfig {
+        RegistryConfig {
+            registry_type: "git".to_string(),
+            url: "https://example.invalid/company/registry.git".to_string(),
+            r#ref: requested_ref.to_string(),
+            cache_dir: cache_dir.display().to_string(),
+            sync: RegistrySyncConfig {
+                mode,
+                max_age_minutes: None,
+            },
+        }
+    }
+
+    fn init_git_registry(path: &Path) -> String {
+        fs::create_dir_all(path.join("policies")).expect("create registry policy dir");
+        fs::write(
+            path.join("policies").join("policy.yaml"),
+            "id: org.test\nversion: 1\nstatus: active\ninstructions:\n  - Test policy.\n",
+        )
+        .expect("write policy");
+        git(path, &["init"]);
+        git(path, &["checkout", "-b", "main"]);
+        git(path, &["add", "."]);
+        git(
+            path,
+            &[
+                "-c",
+                "user.name=Agent Policy Tests",
+                "-c",
+                "user.email=agent-policy-tests@example.invalid",
+                "commit",
+                "-m",
+                "initial registry",
+            ],
+        );
+        git_stdout(path, &["rev-parse", "HEAD"])
+    }
+
+    fn git(path: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {:?} failed:\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn git_stdout(path: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {:?} failed:\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
     fn assert_only_migration_files_were_added(
