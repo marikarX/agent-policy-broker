@@ -1,0 +1,5 @@
+status: active
+applies_when:
+  languages:
+    - rust
+instructions: []

@@ -25,14 +25,6 @@
       "is_nested": false
     },
     {
-      "path": "CLAUDE.md",
-      "scope": ".",
-      "type": "claude_md",
-      "source_kind": "claude",
-      "is_root": true,
-      "is_nested": false
-    },
-    {
       "path": "backend/AGENTS.md",
       "scope": "backend/**",
       "type": "agents_md",
@@ -41,10 +33,10 @@
       "is_nested": true
     },
     {
-      "path": "backend/payments/CLAUDE.md",
+      "path": "backend/payments/AGENTS.md",
       "scope": "backend/payments/**",
-      "type": "claude_md",
-      "source_kind": "claude",
+      "type": "agents_md",
+      "source_kind": "agents",
       "is_root": false,
       "is_nested": true
     },

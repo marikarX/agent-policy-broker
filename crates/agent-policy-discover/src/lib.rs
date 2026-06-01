@@ -212,9 +212,8 @@ mod tests {
                 ".cursor/rules/root.md",
                 ".github/copilot-instructions.md",
                 "AGENTS.md",
-                "CLAUDE.md",
                 "backend/AGENTS.md",
-                "backend/payments/CLAUDE.md",
+                "backend/payments/AGENTS.md",
                 "frontend/.cursor/rules/react.md",
             ]
         );
@@ -231,11 +230,11 @@ mod tests {
 
         let payments = sources
             .iter()
-            .find(|source| source.path == "backend/payments/CLAUDE.md")
+            .find(|source| source.path == "backend/payments/AGENTS.md")
             .expect("payments source");
         assert_eq!(payments.scope, "backend/payments/**");
-        assert_eq!(payments.source_type, InstructionSourceType::ClaudeMd);
-        assert_eq!(payments.source_kind, InstructionSourceKind::Claude);
+        assert_eq!(payments.source_type, InstructionSourceType::AgentsMd);
+        assert_eq!(payments.source_kind, InstructionSourceKind::Agents);
 
         let root_agents = sources
             .iter()
@@ -292,6 +291,6 @@ mod tests {
     }
 
     fn fixture_repo() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/repo")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/nested-instructions")
     }
 }

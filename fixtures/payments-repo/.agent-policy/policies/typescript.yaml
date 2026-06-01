@@ -1,12 +1,15 @@
 id: lang.typescript.base
 version: 1
 status: active
-owner: platform
-priority: 50
+owner: platform-language
+priority: 80
 applies_when:
   languages:
     - typescript
+  task_types:
+    - fix_bug
+    - test
 instructions:
-  - Keep TypeScript changes covered by focused tests.
+  - Preserve the project's existing TypeScript strictness level.
 required_checks:
   - typescript.typecheck

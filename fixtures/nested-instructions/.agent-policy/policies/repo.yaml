@@ -1,0 +1,8 @@
+id: repo.nested.instructions
+version: 1
+status: active
+applies_when:
+  repos:
+    - nested-instructions
+instructions:
+  - Prefer the nearest instruction file for scoped work.

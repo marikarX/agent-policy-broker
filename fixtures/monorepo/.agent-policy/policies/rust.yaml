@@ -1,0 +1,12 @@
+id: lang.rust.base
+version: 1
+status: active
+owner: platform
+priority: 60
+applies_when:
+  languages:
+    - rust
+instructions:
+  - Run the focused Rust test for changed crates.
+required_checks:
+  - cargo test

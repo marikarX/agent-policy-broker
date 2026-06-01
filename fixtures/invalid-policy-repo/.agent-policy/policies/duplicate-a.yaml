@@ -1,0 +1,8 @@
+id: duplicate.policy
+version: 1
+status: active
+applies_when:
+  paths:
+    - src/**
+instructions:
+  - Be careful.

@@ -1,0 +1,6 @@
+id: global.policy
+version: 1
+status: active
+applies_when: {}
+instructions:
+  - Keep generated files untouched.

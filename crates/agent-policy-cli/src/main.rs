@@ -511,9 +511,7 @@ mod tests {
         RegistryCommands, ValidationStatus,
     };
     use clap::{error::ErrorKind, CommandFactory, Parser};
-    use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn clap_command_builds() {
@@ -620,97 +618,18 @@ mod tests {
 
     #[test]
     fn validate_valid_fixture_repo_passes() {
-        let repo = create_fixture_repo("valid-fixture");
-        write_file(
-            repo.join(".agent-policy.yaml"),
-            r#"local_policies:
-  - .agent-policy/policies
-output_budget:
-  max_tokens: 900
-  max_instructions: 8
-  max_required_checks: 4
-  max_blocked_actions: 4
-"#,
-        );
-        write_file(
-            repo.join(".agent-policy/policies/typescript.yaml"),
-            r#"id: lang.typescript.base
-version: 1
-status: active
-applies_when:
-  languages:
-    - typescript
-instructions:
-  - Preserve the project's existing TypeScript strictness level.
-"#,
-        );
+        let repo = fixture_repo("payments-repo");
 
         let report = validate_repo(&repo, None);
 
         assert_eq!(report.status, ValidationStatus::Ok);
         assert!(report.errors.is_empty());
-        assert_eq!(report.summary.policy_files_checked, 1);
+        assert_eq!(report.summary.policy_files_checked, 2);
     }
 
     #[test]
     fn validate_invalid_fixture_repo_reports_useful_errors() {
-        let repo = create_fixture_repo("invalid-fixture");
-        write_file(
-            repo.join(".agent-policy.yaml"),
-            r#"registry:
-  type: git
-  sync:
-    mode: sometimes
-local_policies:
-  - .agent-policy/policies
-output_budget:
-  max_tokens: 0
-  max_instructions: -1
-  max_required_checks: none
-  max_blocked_actions: 0
-"#,
-        );
-        write_file(
-            repo.join(".agent-policy/policies/missing-fields.yaml"),
-            r#"status: active
-applies_when:
-  languages:
-    - rust
-instructions: []
-"#,
-        );
-        write_file(
-            repo.join(".agent-policy/policies/duplicate-a.yaml"),
-            r#"id: duplicate.policy
-version: 1
-status: active
-applies_when:
-  paths:
-    - src/**
-instructions:
-  - Be careful.
-"#,
-        );
-        write_file(
-            repo.join(".agent-policy/policies/duplicate-b.yaml"),
-            r#"id: duplicate.policy
-version: 2
-status: retired
-applies_when: {}
-instructions:
-  - Write clean code.
-"#,
-        );
-        write_file(
-            repo.join(".agent-policy/policies/global.yaml"),
-            r#"id: global.policy
-version: 1
-status: active
-applies_when: {}
-instructions:
-  - Keep generated files untouched.
-"#,
-        );
+        let repo = fixture_repo("invalid-policy-repo");
 
         let report = validate_repo(&repo, None);
         let error_codes = report
@@ -741,24 +660,19 @@ instructions:
         assert!(markdown.contains("policy_duplicate_id"));
     }
 
-    fn create_fixture_repo(label: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time should be after epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "agent-policy-cli-{label}-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir_all(path.join(".agent-policy/policies"))
-            .expect("fixture repo should be created");
-        path
+    #[test]
+    fn validate_monorepo_uses_configured_policy_directories() {
+        let repo = fixture_repo("monorepo");
+
+        let report = validate_repo(&repo, None);
+
+        assert_eq!(report.status, ValidationStatus::Ok);
+        assert_eq!(report.summary.policy_files_checked, 2);
     }
 
-    fn write_file(path: PathBuf, contents: &str) {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).expect("parent dir should be created");
-        }
-        fs::write(path, contents).expect("fixture file should be written");
+    fn fixture_repo(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures")
+            .join(name)
     }
 }

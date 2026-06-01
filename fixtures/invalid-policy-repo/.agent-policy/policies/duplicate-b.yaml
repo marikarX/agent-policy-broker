@@ -1,0 +1,6 @@
+id: duplicate.policy
+version: 2
+status: retired
+applies_when: {}
+instructions:
+  - Write clean code.

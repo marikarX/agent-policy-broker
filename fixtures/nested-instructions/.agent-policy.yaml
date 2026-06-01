@@ -1,0 +1,2 @@
+local_policies:
+  - .agent-policy/policies

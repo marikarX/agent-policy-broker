@@ -1,3 +1,8 @@
 local_policies:
   - .agent-policy/policies
 
+output_budget:
+  max_tokens: 900
+  max_instructions: 8
+  max_required_checks: 4
+  max_blocked_actions: 4

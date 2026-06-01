@@ -1,0 +1,11 @@
+registry:
+  type: git
+  sync:
+    mode: sometimes
+local_policies:
+  - .agent-policy/policies
+output_budget:
+  max_tokens: 0
+  max_instructions: -1
+  max_required_checks: none
+  max_blocked_actions: 0

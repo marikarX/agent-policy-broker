@@ -1,0 +1,14 @@
+id: pkg.web.react
+version: 1
+status: active
+owner: web
+priority: 70
+applies_when:
+  paths:
+    - packages/web/src/**
+  languages:
+    - typescript
+instructions:
+  - Keep UI behavior covered by component tests.
+required_checks:
+  - web.component_tests
