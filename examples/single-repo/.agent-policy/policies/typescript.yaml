@@ -1,0 +1,18 @@
+id: example.single-repo.typescript
+version: 1
+status: active
+owner: example-platform
+priority: 50
+applies_when:
+  languages:
+    - typescript
+  task_types:
+    - fix_bug
+    - add_feature
+    - refactor
+    - test
+instructions:
+  - Prefer existing types over introducing broad `any` values.
+  - Keep exported function signatures stable unless the task asks for an API change.
+required_checks:
+  - single-repo.typecheck

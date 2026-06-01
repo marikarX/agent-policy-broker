@@ -1,0 +1,20 @@
+id: example.monorepo.web
+version: 1
+status: active
+owner: example-web
+priority: 70
+applies_when:
+  paths:
+    - packages/web/**
+  languages:
+    - typescript
+  frameworks:
+    - react
+  task_types:
+    - fix_bug
+    - add_feature
+instructions:
+  - Keep React props explicit and typed.
+  - Add or update component tests when rendering behavior changes.
+required_checks:
+  - monorepo.web.tests
