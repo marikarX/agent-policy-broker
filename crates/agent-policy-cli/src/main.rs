@@ -57,7 +57,7 @@ enum Commands {
     /// Inspect repository guidance and produce an audit report.
     Inspect,
     /// Propose policy drafts from existing instruction sources.
-    Migrate,
+    Migrate(MigrateArgs),
     /// Build or rebuild local retrieval indexes.
     Index,
     /// Manage policy registries.
@@ -88,6 +88,14 @@ struct GetArgs {
     max_tokens: Option<u32>,
 }
 
+#[derive(Debug, Args)]
+struct MigrateArgs {
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    write: bool,
+}
+
 #[derive(Debug, Subcommand)]
 enum RegistryCommands {
     /// Fetch or update a Git-backed policy registry.
@@ -111,7 +119,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Get(args) => run_get(&cli.global, args),
         Commands::Validate => run_validate(&cli.global),
         Commands::Inspect => run_inspect(&cli.global),
-        Commands::Migrate => not_implemented("migrate"),
+        Commands::Migrate(args) => run_migrate(&cli.global, args),
         Commands::Index => not_implemented("index"),
         Commands::Serve => not_implemented("serve"),
         Commands::Registry(registry) => match registry.command {
@@ -191,6 +199,41 @@ enum MigrationClass {
     SharedRegistryPolicy,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MigrationDryRunReport {
+    repo: String,
+    mode: &'static str,
+    summary: MigrationDryRunSummary,
+    drafts: Vec<PolicyDraft>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MigrationDryRunSummary {
+    source_count: usize,
+    candidate_instruction_count: usize,
+    draft_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PolicyDraft {
+    id: String,
+    target_path: String,
+    migration_class: MigrationClass,
+    applies_when_paths: Vec<String>,
+    instructions: Vec<String>,
+    required_checks: Vec<String>,
+    generated_from: Vec<PolicyDraftProvenance>,
+    policy_yaml: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PolicyDraftProvenance {
+    path: String,
+    source_type: InstructionSourceType,
+    scope: String,
+    lines: Vec<usize>,
+}
+
 fn run_inspect(global: &GlobalArgs) -> anyhow::Result<()> {
     let repo = global.repo.as_deref().unwrap_or_else(|| Path::new("."));
     let discovered = discover(repo)?;
@@ -202,6 +245,31 @@ fn run_inspect(global: &GlobalArgs) -> anyhow::Result<()> {
         }
         OutputFormat::Markdown => {
             print!("{}", render_inspection_markdown(&report));
+        }
+    }
+
+    Ok(())
+}
+
+fn run_migrate(global: &GlobalArgs, args: MigrateArgs) -> anyhow::Result<()> {
+    if args.write {
+        anyhow::bail!("`agent-policy migrate --write` is not implemented yet; use `--dry-run`");
+    }
+    if !args.dry_run {
+        anyhow::bail!("migrate currently supports dry-run only; pass `--dry-run`");
+    }
+
+    let repo = global.repo.as_deref().unwrap_or_else(|| Path::new("."));
+    let discovered = discover(repo)?;
+    let inspection = inspect_repo(repo, discovered);
+    let report = migration_dry_run_report(&inspection);
+
+    match global.format.clone().unwrap_or(OutputFormat::Markdown) {
+        OutputFormat::Json => {
+            println!("{}", render_migration_dry_run_json(&report));
+        }
+        OutputFormat::Markdown => {
+            print!("{}", render_migration_dry_run_markdown(&report));
         }
     }
 
@@ -671,6 +739,233 @@ fn migration_class_from_name(name: &str) -> MigrationClass {
     }
 }
 
+fn migration_dry_run_report(inspection: &InspectionReport) -> MigrationDryRunReport {
+    let source_types = inspection
+        .instruction_sources
+        .iter()
+        .map(|source| (source.path.clone(), source.source_type.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut grouped = BTreeMap::<String, DraftGroup>::new();
+
+    for candidate in &inspection.candidate_instructions {
+        let Some(target_policy) = &candidate.target_policy else {
+            continue;
+        };
+        let group = grouped
+            .entry(target_policy.clone())
+            .or_insert_with(|| DraftGroup::new(target_policy, &candidate.migration_class));
+        group.migration_class =
+            strongest_migration_class(&group.migration_class, &candidate.migration_class);
+        if candidate.candidate_type == "required_check" {
+            push_unique(&mut group.required_checks, candidate.text.clone());
+        } else {
+            push_unique(&mut group.instructions, candidate.text.clone());
+        }
+        if candidate.scope != "." {
+            push_unique(&mut group.applies_when_paths, candidate.scope.clone());
+        }
+        let source_type = source_types
+            .get(&candidate.source)
+            .cloned()
+            .unwrap_or(InstructionSourceType::AgentsMd);
+        group.add_provenance(
+            &candidate.source,
+            source_type,
+            &candidate.scope,
+            candidate.line,
+        );
+    }
+
+    let drafts = grouped
+        .into_values()
+        .map(|group| group.into_policy_draft())
+        .collect::<Vec<_>>();
+
+    MigrationDryRunReport {
+        repo: inspection.repo.clone(),
+        mode: "dry_run",
+        summary: MigrationDryRunSummary {
+            source_count: inspection.summary.source_count,
+            candidate_instruction_count: inspection.summary.candidate_instruction_count,
+            draft_count: drafts.len(),
+        },
+        drafts,
+    }
+}
+
+#[derive(Debug)]
+struct DraftGroup {
+    id: String,
+    migration_class: MigrationClass,
+    applies_when_paths: Vec<String>,
+    instructions: Vec<String>,
+    required_checks: Vec<String>,
+    generated_from: Vec<PolicyDraftProvenance>,
+}
+
+impl DraftGroup {
+    fn new(id: &str, migration_class: &MigrationClass) -> Self {
+        Self {
+            id: id.to_string(),
+            migration_class: migration_class.clone(),
+            applies_when_paths: Vec::new(),
+            instructions: Vec::new(),
+            required_checks: Vec::new(),
+            generated_from: Vec::new(),
+        }
+    }
+
+    fn add_provenance(
+        &mut self,
+        path: &str,
+        source_type: InstructionSourceType,
+        scope: &str,
+        line: usize,
+    ) {
+        if let Some(existing) = self.generated_from.iter_mut().find(|item| {
+            item.path == path && item.scope == scope && item.source_type == source_type
+        }) {
+            if !existing.lines.contains(&line) {
+                existing.lines.push(line);
+                existing.lines.sort_unstable();
+            }
+            return;
+        }
+
+        self.generated_from.push(PolicyDraftProvenance {
+            path: path.to_string(),
+            source_type,
+            scope: scope.to_string(),
+            lines: vec![line],
+        });
+    }
+
+    fn into_policy_draft(mut self) -> PolicyDraft {
+        self.generated_from.sort_by(|left, right| {
+            left.path
+                .cmp(&right.path)
+                .then_with(|| left.lines.cmp(&right.lines))
+        });
+        let target_path = suggested_policy_path(&self.id);
+        let mut draft = PolicyDraft {
+            id: self.id,
+            target_path,
+            migration_class: self.migration_class,
+            applies_when_paths: self.applies_when_paths,
+            instructions: self.instructions,
+            required_checks: self.required_checks,
+            generated_from: self.generated_from,
+            policy_yaml: String::new(),
+        };
+        draft.policy_yaml = render_policy_draft_yaml(&draft);
+        draft
+    }
+}
+
+fn strongest_migration_class(left: &MigrationClass, right: &MigrationClass) -> MigrationClass {
+    if migration_class_rank(right) > migration_class_rank(left) {
+        right.clone()
+    } else {
+        left.clone()
+    }
+}
+
+fn migration_class_rank(class: &MigrationClass) -> u8 {
+    match class {
+        MigrationClass::KeepLocal => 0,
+        MigrationClass::RepoPolicy => 1,
+        MigrationClass::SharedRegistryPolicy => 2,
+    }
+}
+
+fn suggested_policy_path(policy_id: &str) -> String {
+    let file_name = policy_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    format!(".agent-policy/migration/{file_name}.yaml")
+}
+
+fn render_policy_draft_yaml(draft: &PolicyDraft) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("id: {}\n", draft.id));
+    out.push_str("version: 1\n");
+    out.push_str("status: draft\n\n");
+    out.push_str("applies_when:");
+    if draft.applies_when_paths.is_empty() {
+        out.push_str(" {}\n\n");
+    } else {
+        out.push('\n');
+        out.push_str("  paths:\n");
+        for path in &draft.applies_when_paths {
+            out.push_str("    - ");
+            out.push_str(&yaml_string(path));
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+
+    render_yaml_string_list(&mut out, "instructions", &draft.instructions);
+    if !draft.required_checks.is_empty() {
+        out.push('\n');
+        render_yaml_string_list(&mut out, "required_checks", &draft.required_checks);
+    }
+
+    out.push('\n');
+    out.push_str("metadata:\n");
+    out.push_str("  generated_from:\n");
+    for provenance in &draft.generated_from {
+        out.push_str("    - path: ");
+        out.push_str(&yaml_string(&provenance.path));
+        out.push('\n');
+        out.push_str("      source_type: ");
+        out.push_str(instruction_source_type_name(&provenance.source_type));
+        out.push('\n');
+        out.push_str("      scope: ");
+        out.push_str(&yaml_string(&provenance.scope));
+        out.push('\n');
+        out.push_str("      lines:");
+        if provenance.lines.is_empty() {
+            out.push_str(" []\n");
+        } else {
+            out.push('\n');
+            for line in &provenance.lines {
+                out.push_str(&format!("        - {line}\n"));
+            }
+        }
+    }
+    out.push_str("  migration_status: proposed\n");
+    out.push_str("  migration_class: ");
+    out.push_str(migration_class_name(&draft.migration_class));
+    out.push('\n');
+    out
+}
+
+fn render_yaml_string_list(out: &mut String, field: &str, values: &[String]) {
+    out.push_str(field);
+    out.push(':');
+    if values.is_empty() {
+        out.push_str(" []\n");
+        return;
+    }
+    out.push('\n');
+    for value in values {
+        out.push_str("  - ");
+        out.push_str(&yaml_string(value));
+        out.push('\n');
+    }
+}
+
+fn yaml_string(value: &str) -> String {
+    format!("\"{}\"", json_escape(value))
+}
+
 fn render_inspection_json(report: &InspectionReport) -> String {
     let mut out = String::new();
     out.push_str("{\n");
@@ -928,6 +1223,132 @@ fn render_migration_candidates_json(
     out.push(']');
 }
 
+fn render_migration_dry_run_json(report: &MigrationDryRunReport) -> String {
+    let mut out = String::new();
+    out.push_str("{\n");
+    out.push_str(&format!("  \"repo\": \"{}\",\n", json_escape(&report.repo)));
+    out.push_str(&format!("  \"mode\": \"{}\",\n", report.mode));
+    out.push_str("  \"summary\": {\n");
+    out.push_str(&format!(
+        "    \"source_count\": {},\n",
+        report.summary.source_count
+    ));
+    out.push_str(&format!(
+        "    \"candidate_instruction_count\": {},\n",
+        report.summary.candidate_instruction_count
+    ));
+    out.push_str(&format!(
+        "    \"draft_count\": {}\n",
+        report.summary.draft_count
+    ));
+    out.push_str("  },\n");
+    out.push_str("  \"drafts\": ");
+    render_policy_drafts_json(&mut out, &report.drafts, 2);
+    out.push_str("\n}");
+    out
+}
+
+fn render_policy_drafts_json(out: &mut String, drafts: &[PolicyDraft], indent: usize) {
+    let pad = " ".repeat(indent);
+    let item_pad = " ".repeat(indent + 2);
+    out.push_str("[\n");
+    for (index, draft) in drafts.iter().enumerate() {
+        out.push_str(&item_pad);
+        out.push_str("{\n");
+        out.push_str(&format!(
+            "{}  \"id\": \"{}\",\n",
+            item_pad,
+            json_escape(&draft.id)
+        ));
+        out.push_str(&format!(
+            "{}  \"target_path\": \"{}\",\n",
+            item_pad,
+            json_escape(&draft.target_path)
+        ));
+        out.push_str(&format!(
+            "{}  \"migration_class\": \"{}\",\n",
+            item_pad,
+            migration_class_name(&draft.migration_class)
+        ));
+        out.push_str(&format!("{}  \"generated_from\": ", item_pad));
+        render_policy_draft_provenance_json(out, &draft.generated_from, indent + 4);
+        out.push_str(",\n");
+        out.push_str(&format!(
+            "{}  \"policy_yaml\": \"{}\"\n",
+            item_pad,
+            json_escape(&draft.policy_yaml)
+        ));
+        out.push_str(&item_pad);
+        out.push('}');
+        if index + 1 != drafts.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push_str(&pad);
+    out.push(']');
+}
+
+fn render_policy_draft_provenance_json(
+    out: &mut String,
+    generated_from: &[PolicyDraftProvenance],
+    indent: usize,
+) {
+    let pad = " ".repeat(indent);
+    let item_pad = " ".repeat(indent + 2);
+    out.push_str("[\n");
+    for (index, provenance) in generated_from.iter().enumerate() {
+        out.push_str(&item_pad);
+        out.push_str("{\n");
+        out.push_str(&format!(
+            "{}  \"path\": \"{}\",\n",
+            item_pad,
+            json_escape(&provenance.path)
+        ));
+        out.push_str(&format!(
+            "{}  \"source_type\": \"{}\",\n",
+            item_pad,
+            instruction_source_type_name(&provenance.source_type)
+        ));
+        out.push_str(&format!(
+            "{}  \"scope\": \"{}\",\n",
+            item_pad,
+            json_escape(&provenance.scope)
+        ));
+        out.push_str(&format!("{}  \"lines\": ", item_pad));
+        render_usize_array_json(out, &provenance.lines, indent + 4);
+        out.push('\n');
+        out.push_str(&item_pad);
+        out.push('}');
+        if index + 1 != generated_from.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push_str(&pad);
+    out.push(']');
+}
+
+fn render_usize_array_json(out: &mut String, values: &[usize], indent: usize) {
+    if values.is_empty() {
+        out.push_str("[]");
+        return;
+    }
+
+    let pad = " ".repeat(indent);
+    let item_pad = " ".repeat(indent + 2);
+    out.push_str("[\n");
+    for (index, value) in values.iter().enumerate() {
+        out.push_str(&format!("{item_pad}{value}"));
+        if index + 1 != values.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push_str(&pad);
+    out.push(']');
+}
+
 fn render_string_array_json(out: &mut String, values: &[String], indent: usize) {
     if values.is_empty() {
         out.push_str("[]");
@@ -1009,6 +1430,68 @@ fn render_inspection_markdown(report: &InspectionReport) -> String {
     render_conflict_section(&mut out, &report.conflicts);
     render_migration_section(&mut out, &report.migration_candidates);
     out
+}
+
+fn render_migration_dry_run_markdown(report: &MigrationDryRunReport) -> String {
+    let mut out = String::new();
+    out.push_str("# Agent Policy Migration Dry Run\n\n");
+    out.push_str(&format!("- Repository: `{}`\n", report.repo));
+    out.push_str("- Mode: `dry_run`\n");
+    out.push_str(&format!(
+        "- Proposed drafts: {}; sources: {}; candidate instructions: {}.\n\n",
+        report.summary.draft_count,
+        report.summary.source_count,
+        report.summary.candidate_instruction_count
+    ));
+
+    out.push_str("## Proposed Files\n\n");
+    if report.drafts.is_empty() {
+        out.push_str("- None proposed.\n");
+        return out;
+    }
+
+    for draft in &report.drafts {
+        out.push_str(&format!(
+            "### `{}`\n\n",
+            markdown_inline(&draft.target_path)
+        ));
+        out.push_str(&format!("- Policy: `{}`\n", markdown_inline(&draft.id)));
+        out.push_str(&format!(
+            "- Migration class: `{}`\n",
+            migration_class_name(&draft.migration_class)
+        ));
+        out.push_str("- Generated from: ");
+        out.push_str(
+            &draft
+                .generated_from
+                .iter()
+                .map(|provenance| {
+                    format!(
+                        "`{}` lines {}",
+                        markdown_inline(&provenance.path),
+                        provenance
+                            .lines
+                            .iter()
+                            .map(|line| line.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        out.push_str("\n\n```yaml\n");
+        out.push_str(&draft.policy_yaml);
+        out.push_str("```\n\n");
+    }
+
+    out
+}
+
+fn markdown_inline(text: &str) -> String {
+    text.replace('`', "\\`")
+        .replace('\n', " ")
+        .replace('\r', " ")
 }
 
 fn render_duplicate_section(out: &mut String, duplicates: &[InspectionDuplicate]) {
@@ -1620,10 +2103,11 @@ fn not_implemented(command_name: &str) -> anyhow::Result<()> {
 mod tests {
     use super::{
         detect_inspection_conflicts, detect_inspection_duplicates, inspect_repo,
-        markdown_candidate_policies, render_inspection_json, render_inspection_markdown,
-        render_validation_markdown, scope_matches_task_files, validate_repo, Cli, Commands,
-        GlobalArgs, InspectionCandidate, MigrationClass, OutputFormat, RegistryCommands,
-        ValidationStatus,
+        markdown_candidate_policies, migration_dry_run_report, render_inspection_json,
+        render_inspection_markdown, render_migration_dry_run_json,
+        render_migration_dry_run_markdown, render_validation_markdown, run,
+        scope_matches_task_files, validate_repo, Cli, Commands, GlobalArgs, InspectionCandidate,
+        MigrationClass, OutputFormat, RegistryCommands, ValidationStatus,
     };
     use agent_policy_core::{
         build_instruction_bundle, BundleBuildOptions, DetectedContext, OutputBudget, TaskDetails,
@@ -1631,6 +2115,7 @@ mod tests {
     };
     use agent_policy_discover::discover;
     use clap::{error::ErrorKind, CommandFactory, Parser};
+    use std::fs;
     use std::path::PathBuf;
 
     #[test]
@@ -1715,6 +2200,26 @@ mod tests {
             .expect("parse inspect");
         assert!(matches!(cli.global.format, Some(OutputFormat::Json)));
         assert!(matches!(cli.command, Commands::Inspect));
+    }
+
+    #[test]
+    fn parse_migrate_dry_run_with_markdown_format() {
+        let cli = Cli::try_parse_from([
+            "agent-policy",
+            "migrate",
+            "--dry-run",
+            "--format",
+            "markdown",
+        ])
+        .expect("parse migrate");
+        assert!(matches!(cli.global.format, Some(OutputFormat::Markdown)));
+        match cli.command {
+            Commands::Migrate(args) => {
+                assert!(args.dry_run);
+                assert!(!args.write);
+            }
+            _ => panic!("expected migrate command"),
+        }
     }
 
     #[test]
@@ -1832,6 +2337,91 @@ mod tests {
         assert!(markdown.contains("## Duplicates"));
         assert!(markdown.contains("## Conflicts"));
         assert!(markdown.contains("## Migration Candidates"));
+    }
+
+    #[test]
+    fn migrate_dry_run_proposes_draft_policy_yaml_for_fixture_repo() {
+        let repo = fixture_repo("nested-instructions");
+        let discovered = discover(&repo).expect("discover fixture repo");
+        let inspection = inspect_repo(&repo, discovered);
+        let report = migration_dry_run_report(&inspection);
+
+        assert_eq!(report.mode, "dry_run");
+        assert!(report
+            .drafts
+            .iter()
+            .any(|draft| draft.id == "local.backend.payments.payments"
+                && draft.target_path
+                    == ".agent-policy/migration/local.backend.payments.payments.yaml"
+                && draft.policy_yaml.contains("status: draft")
+                && draft.policy_yaml.contains("generated_from:")
+                && draft.policy_yaml.contains("Preserve payment invariants.")));
+        let payment_draft = report
+            .drafts
+            .iter()
+            .find(|draft| draft.id == "local.backend.payments.payments")
+            .expect("payment draft");
+        assert_eq!(
+            payment_draft.policy_yaml,
+            PAYMENT_POLICY_DRY_RUN_YAML_SNAPSHOT
+        );
+        let checks_draft = report
+            .drafts
+            .iter()
+            .find(|draft| draft.id == "repo.checks")
+            .expect("checks draft");
+        assert_eq!(
+            checks_draft.policy_yaml,
+            CHECKS_POLICY_DRY_RUN_YAML_SNAPSHOT
+        );
+
+        let json = render_migration_dry_run_json(&report);
+        assert!(json.contains("\"mode\": \"dry_run\""));
+        assert!(json.contains("\"policy_yaml\""));
+        assert!(json.contains("generated_from"));
+
+        let markdown = render_migration_dry_run_markdown(&report);
+        assert!(markdown.contains("# Agent Policy Migration Dry Run"));
+        assert!(markdown.contains("```yaml"));
+        assert!(markdown.contains(".agent-policy/migration/local.backend.payments.payments.yaml"));
+    }
+
+    #[test]
+    fn migrate_dry_run_does_not_modify_instruction_files() {
+        let repo = fixture_repo("nested-instructions");
+        let agents_path = repo.join("AGENTS.md");
+        let before = fs::read_to_string(&agents_path).expect("read fixture before");
+
+        let cli = Cli::try_parse_from([
+            "agent-policy",
+            "--repo",
+            repo.to_str().expect("utf8 repo"),
+            "migrate",
+            "--dry-run",
+            "--format",
+            "json",
+        ])
+        .expect("parse migrate");
+        run(cli).expect("run dry-run migration");
+
+        let after = fs::read_to_string(&agents_path).expect("read fixture after");
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn migrate_write_is_rejected_until_write_mode_exists() {
+        let repo = fixture_repo("nested-instructions");
+        let cli = Cli::try_parse_from([
+            "agent-policy",
+            "--repo",
+            repo.to_str().expect("utf8 repo"),
+            "migrate",
+            "--write",
+        ])
+        .expect("parse migrate write");
+
+        let error = run(cli).expect_err("write mode should fail");
+        assert!(error.to_string().contains("--write"));
     }
 
     #[test]
@@ -2030,4 +2620,48 @@ mod tests {
             .join("../../fixtures")
             .join(name)
     }
+
+    const PAYMENT_POLICY_DRY_RUN_YAML_SNAPSHOT: &str = r#"id: local.backend.payments.payments
+version: 1
+status: draft
+
+applies_when:
+  paths:
+    - "backend/payments/**"
+
+instructions:
+  - "Preserve payment invariants."
+
+metadata:
+  generated_from:
+    - path: "backend/payments/AGENTS.md"
+      source_type: agents_md
+      scope: "backend/payments/**"
+      lines:
+        - 3
+  migration_status: proposed
+  migration_class: keep_local
+"#;
+
+    const CHECKS_POLICY_DRY_RUN_YAML_SNAPSHOT: &str = r#"id: repo.checks
+version: 1
+status: draft
+
+applies_when: {}
+
+instructions: []
+
+required_checks:
+  - "cargo test"
+
+metadata:
+  generated_from:
+    - path: "AGENTS.md"
+      source_type: agents_md
+      scope: "."
+      lines:
+        - 13
+  migration_status: proposed
+  migration_class: repo_policy
+"#;
 }
