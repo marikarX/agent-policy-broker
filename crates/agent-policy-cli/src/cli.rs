@@ -1561,7 +1561,7 @@ instructions:
         let repo = fixture_repo("nested-instructions");
         let discovered = discover(&repo).expect("discover fixture repo");
         let files = vec!["backend/payments/src/refunds.ts".to_string()];
-        let policies = markdown_candidate_policies(&repo, &discovered, &files);
+        let policies = markdown_candidate_policies(&repo, &discovered, &files, &[".".to_string()]);
         let bundle = build_instruction_bundle(
             &TaskIntent {
                 repo: Some("nested-instructions".into()),
@@ -1615,7 +1615,7 @@ instructions:
         let repo = fixture_repo("nested-instructions");
         let discovered = discover(&repo).expect("discover fixture repo");
         let files = vec!["frontend/src/App.tsx".to_string()];
-        let policies = markdown_candidate_policies(&repo, &discovered, &files);
+        let policies = markdown_candidate_policies(&repo, &discovered, &files, &[".".to_string()]);
         let bundle = build_instruction_bundle(
             &TaskIntent {
                 repo: Some("nested-instructions".into()),
