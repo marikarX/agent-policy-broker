@@ -1407,6 +1407,90 @@ instructions:
         assert_only_migration_files_were_added(&repo_files_before, &repo_file_contents(repo));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn migrate_write_rejects_symlinked_draft_file() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempRepo::copy_fixture("nested-instructions");
+        let repo = temp.path();
+        let migration_dir = repo.join(".agent-policy").join("migration");
+        fs::create_dir_all(&migration_dir).expect("create migration dir");
+
+        let outside_target = repo.join("outside-target.txt");
+        fs::write(&outside_target, "ORIGINAL_SENTINEL").expect("write outside target");
+
+        symlink(
+            &outside_target,
+            migration_dir.join("local.backend.payments.payments.yaml"),
+        )
+        .expect("create symlinked draft");
+
+        let cli = Cli::try_parse_from([
+            "agent-policy",
+            "--repo",
+            repo.to_str().expect("utf8 repo"),
+            "migrate",
+            "--write",
+            "--format",
+            "json",
+        ])
+        .expect("parse migrate write");
+
+        let error = run(cli).expect_err("symlinked draft must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("refusing to overwrite symlinked migration draft"),
+            "unexpected error: {error:#}"
+        );
+
+        assert_eq!(
+            fs::read_to_string(&outside_target).expect("read outside target"),
+            "ORIGINAL_SENTINEL"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn migrate_write_rejects_symlinked_migration_directory_component() {
+        use std::os::unix::fs::symlink;
+    
+        let temp = TempRepo::copy_fixture("nested-instructions");
+        let repo = temp.path();
+    
+        let agent_policy_dir = repo.join(".agent-policy");
+        if agent_policy_dir.exists() {
+            fs::remove_dir_all(&agent_policy_dir).expect("remove existing .agent-policy dir");
+        }
+    
+        let outside_dir = repo.join("outside-agent-policy");
+        fs::create_dir(&outside_dir).expect("create outside dir");
+    
+        symlink(&outside_dir, &agent_policy_dir).expect("create .agent-policy symlink");
+    
+        let cli = Cli::try_parse_from([
+            "agent-policy",
+            "--repo",
+            repo.to_str().expect("utf8 repo"),
+            "migrate",
+            "--write",
+            "--format",
+            "json",
+        ])
+        .expect("parse migrate write");
+        
+        let error = run(cli).expect_err("symlinked .agent-policy must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("refusing to use symlinked migration directory component .agent-policy"),
+            "unexpected error: {error:#}"
+        );
+    
+        assert!(!outside_dir.join("migration").exists());
+    }
+
     #[test]
     fn inspect_reports_exact_duplicates_and_basic_conflicts() {
         let candidates = vec![
