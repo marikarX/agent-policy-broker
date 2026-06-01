@@ -60,9 +60,11 @@ struct ApiError {
 }
 
 pub(crate) fn run(global: &GlobalArgs, args: ServeArgs) -> anyhow::Result<()> {
+    ensure_loopback_host(&args.host)?;
+
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
-        let bind_addr = format!("{}:{}", args.host, args.port);
+        let bind_addr = bind_addr(&args.host, args.port);
         let listener = TcpListener::bind(&bind_addr).await?;
         let local_addr = listener.local_addr()?;
         eprintln!("agent-policy serving on http://{local_addr}");
@@ -94,7 +96,9 @@ async fn instructions(
     State(state): State<ServeState>,
     Json(request): Json<InstructionsRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let global = request_global(&state, request.repo.clone(), request.config.clone());
+    reject_request_paths(request.repo.as_ref(), request.config.as_ref())?;
+
+    let global = request_global(&state);
     let args = GetArgs {
         task: request.task,
         task_type: request.task_type,
@@ -114,11 +118,9 @@ async fn discover_repo(
     State(state): State<ServeState>,
     Json(request): Json<RepoRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let _config = request.config;
-    let repo = request
-        .repo
-        .or(state.repo)
-        .unwrap_or_else(|| PathBuf::from("."));
+    reject_request_paths(request.repo.as_ref(), request.config.as_ref())?;
+
+    let repo = state.repo.unwrap_or_else(|| PathBuf::from("."));
     let discovered = discover(repo).map_err(ApiError::internal)?;
     let value = serde_json::to_value(discovered).map_err(ApiError::internal)?;
     Ok(Json(value))
@@ -128,11 +130,9 @@ async fn inspect(
     State(state): State<ServeState>,
     Json(request): Json<RepoRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let _config = request.config;
-    let repo = request
-        .repo
-        .or(state.repo)
-        .unwrap_or_else(|| PathBuf::from("."));
+    reject_request_paths(request.repo.as_ref(), request.config.as_ref())?;
+
+    let repo = state.repo.unwrap_or_else(|| PathBuf::from("."));
     let discovered = discover(&repo).map_err(ApiError::internal)?;
     let report = inspect_repo(&repo, discovered);
     let value =
@@ -140,14 +140,10 @@ async fn inspect(
     Ok(Json(value))
 }
 
-fn request_global(
-    state: &ServeState,
-    repo: Option<PathBuf>,
-    config: Option<PathBuf>,
-) -> GlobalArgs {
+fn request_global(state: &ServeState) -> GlobalArgs {
     GlobalArgs {
-        repo: repo.or_else(|| state.repo.clone()),
-        config: config.or_else(|| state.config.clone()),
+        repo: state.repo.clone(),
+        config: state.config.clone(),
         format: None,
         verbose: false,
         quiet: false,
@@ -155,7 +151,46 @@ fn request_global(
     }
 }
 
+fn bind_addr(host: &str, port: u16) -> String {
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V6(_)) => format!("[{host}]:{port}"),
+        _ => format!("{host}:{port}"),
+    }
+}
+
+fn ensure_loopback_host(host: &str) -> anyhow::Result<()> {
+    if host.eq_ignore_ascii_case("localhost") {
+        return Ok(());
+    }
+
+    let ip: IpAddr = host.parse().map_err(|_| {
+        anyhow::anyhow!("serve --host must be a loopback IP address or localhost; got {host:?}")
+    })?;
+    if ip.is_loopback() {
+        Ok(())
+    } else {
+        anyhow::bail!("serve --host must be loopback-only; got {host}")
+    }
+}
+
+fn reject_request_paths(repo: Option<&PathBuf>, config: Option<&PathBuf>) -> Result<(), ApiError> {
+    if repo.is_some() || config.is_some() {
+        return Err(ApiError::bad_request(
+            "request-level repo/config paths are not allowed; start the server with --repo/--config instead",
+        ));
+    }
+    Ok(())
+}
+
 impl ApiError {
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            code: "bad_request",
+            message: message.into(),
+        }
+    }
+
     fn internal(error: impl std::fmt::Display) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -178,7 +213,7 @@ impl IntoResponse for ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::app;
+    use super::{app, bind_addr, ensure_loopback_host};
     use crate::cli::{GetArgs, GlobalArgs, InstructionDiscoveryMode};
     use crate::commands::get::build_instruction_bundle_for_get;
     use agent_policy_core::render_bundle_json;
@@ -199,6 +234,23 @@ mod tests {
             quiet: false,
             no_network: true,
         }
+    }
+
+    #[test]
+    fn serve_host_must_be_loopback() {
+        assert!(ensure_loopback_host("127.0.0.1").is_ok());
+        assert!(ensure_loopback_host("localhost").is_ok());
+        assert!(ensure_loopback_host("::1").is_ok());
+        assert!(ensure_loopback_host("0.0.0.0").is_err());
+        assert!(ensure_loopback_host("192.168.1.10").is_err());
+        assert!(ensure_loopback_host("example.com").is_err());
+    }
+
+    #[test]
+    fn bind_addr_brackets_ipv6_hosts() {
+        assert_eq!(bind_addr("127.0.0.1", 8765), "127.0.0.1:8765");
+        assert_eq!(bind_addr("localhost", 8765), "localhost:8765");
+        assert_eq!(bind_addr("::1", 8765), "[::1]:8765");
     }
 
     #[tokio::test]
@@ -260,6 +312,33 @@ mod tests {
             serde_json::from_str(&render_bundle_json(&expected_bundle).unwrap()).unwrap();
 
         assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn endpoints_reject_request_level_paths() {
+        for path in ["/instructions", "/discover", "/inspect"] {
+            for request_body in [
+                json!({ "repo": "/tmp/other-repo" }),
+                json!({ "config": "/tmp/other-config.json" }),
+            ] {
+                let response = app(&global())
+                    .oneshot(
+                        Request::builder()
+                            .method(Method::POST)
+                            .uri(path)
+                            .header(header::CONTENT_TYPE, "application/json")
+                            .body(Body::from(request_body.to_string()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+
+                assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+                let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                let value: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(value["code"], "bad_request");
+            }
+        }
     }
 
     #[tokio::test]
