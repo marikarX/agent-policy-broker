@@ -2,7 +2,7 @@
 
 Agent Policy Broker is an open-source CLI and service pattern for delivering concise, task-specific, versioned instructions to coding agents.
 
-Instead of placing large, duplicated instruction files in every repository, teams can keep a small bootstrap file such as `AGENTS.md`, `CLAUDE.md`, Cursor rules, or Copilot instructions that tells the coding agent to request the right policy bundle for the current task.
+Instead of placing large, duplicated instruction files in every repository, teams can keep a small bootstrap file such as `AGENTS.md`, `CLAUDE.md`, Cursor rules, or Copilot instructions that tells the coding agent to request the right policy bundle for the current task. The broker can also help activate this pattern by archiving existing instructions, importing or migrating useful guidance, and replacing active instruction files with a small broker bootstrap.
 
 The broker is designed as a **context-budgeting policy engine**. It retrieves broadly, ranks aggressively, and returns only the instructions that matter now.
 
@@ -37,6 +37,8 @@ This repository is in active early implementation. The open-source core now incl
 - GitHub Actions PR reporting example
 - localhost service endpoints for repeated lookups and editor integrations
 
+Planned lifecycle work includes explicit activation and deactivation commands that archive existing instruction files, write small broker bootstraps, and restore the previous state when requested.
+
 The project is still pre-release. Interfaces, schemas, and command behavior may change while the MVP is hardened.
 
 ## Why this exists
@@ -55,6 +57,16 @@ AGENTS.md / CLAUDE.md / editor rules
         -> broker ranks and compiles concise instructions
         -> agent receives compact policy bundle
         -> agent applies instructions and reports policy version
+```
+
+Activation mode adds a preparation step:
+
+```text
+existing global or repo instructions
+        -> inspect / migrate / archive
+        -> replace active instruction file with broker bootstrap
+        -> validate and index
+        -> agent-policy get becomes the runtime instruction path
 ```
 
 Instruction discovery has two modes:
@@ -181,6 +193,7 @@ The broker may return:
 - [Configuration](docs/configuration.md)
 - [Instruction discovery and layered guidance](docs/instruction-discovery.md)
 - [Repository inspection and migration](docs/repo-inspection-and-migration.md)
+- [Activation lifecycle](docs/activation-lifecycle.md)
 - [Retrieval and ranking](docs/retrieval-and-ranking.md)
 - [Conflict resolution](docs/conflict-resolution.md)
 - [Context budgeting and retrieval](docs/context-budgeting.md)
@@ -228,64 +241,3 @@ Before tagging or sharing a build, run the same checks used by CI:
 cargo check --workspace --all-targets
 cargo test --workspace --all-targets
 ```
-
-Cross-platform builds can be produced with standard Cargo targets when the Rust target and any required system toolchain are installed:
-
-```bash
-rustup target add x86_64-unknown-linux-gnu
-cargo build --release -p agent-policy-cli --target x86_64-unknown-linux-gnu
-```
-
-The CLI uses `rusqlite` with bundled SQLite, which keeps local builds simple across common Linux, macOS, and Windows environments.
-
-## Repository layout
-
-```text
-.
-├── README.md
-├── CONTRIBUTING.md
-├── LICENSE
-├── PRIVACY.md
-├── SECURITY.md
-├── docs/
-│   ├── architecture.md
-│   ├── agent-integration.md
-│   ├── cli-reference.md
-│   ├── configuration.md
-│   ├── conflict-resolution.md
-│   ├── context-budgeting.md
-│   ├── github-action.md
-│   ├── getting-started.md
-│   ├── implementation-stack.md
-│   ├── instruction-discovery.md
-│   ├── policy-schema.md
-│   ├── project-scope.md
-│   ├── registry-mode.md
-│   ├── repo-inspection-and-migration.md
-│   ├── retrieval-and-ranking.md
-│   ├── storage-and-indexing.md
-│   ├── threat-model.md
-│   └── roadmap.md
-└── examples/
-    ├── AGENTS.md
-    └── policies/
-        ├── payments.yaml
-        └── typescript.yaml
-```
-
-## Design principles
-
-1. **Less context, stronger signal**: return only the guidance that matters for the current task.
-2. **Retrieve broadly, compile narrowly**: use semantic retrieval and structured matching internally, but do not dump raw documents into the agent context.
-3. **Respect existing repo guidance safely**: discover nested instruction files and treat them as path-scoped inputs without letting untrusted local files weaken reviewed registry policy.
-4. **Support gradual migration**: inspect existing instruction files, detect duplicates/conflicts, and generate draft broker policies for human review.
-5. **Deterministic first**: policy selection should be explainable and reproducible.
-6. **Policy as code**: policies should be versioned, reviewed, and owned.
-7. **Indexes are derived artifacts**: metadata, full-text, and vector indexes accelerate retrieval but do not replace the Git policy registry as source of truth.
-8. **Local-first**: the open-source core should work without a hosted service.
-9. **Vendor-neutral**: support Codex, Claude Code, Copilot, Cursor, and other coding agents through simple command execution first.
-10. **Auditable**: every returned instruction should be traceable to a source policy.
-
-## License
-
-Agent Policy Broker is licensed under the [MIT License](LICENSE).
