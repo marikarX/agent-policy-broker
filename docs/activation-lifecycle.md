@@ -1,0 +1,319 @@
+# Activation lifecycle
+
+Agent Policy Broker can be used in two ways:
+
+1. **Lookup only**: an existing `AGENTS.md`, `CLAUDE.md`, editor rule, or user habit calls `agent-policy get` before a coding task.
+2. **Activated**: the broker imports existing instruction sources, archives the originals, replaces active instruction files with a small bootstrap, validates the result, builds indexes, and provides a rollback path.
+
+Activation is the lifecycle that turns scattered static instructions into broker-managed instruction delivery. It is intentionally separate from normal lookup commands.
+
+## Goals
+
+Activation should:
+
+- preserve existing instructions before modifying anything;
+- convert useful instruction content into broker-managed policy, supporting knowledge, or archived provenance;
+- replace active instruction files with a small bootstrap that tells the coding agent to call `agent-policy get`;
+- validate and index the prepared policy state;
+- smoke-test that policy lookup returns a useful bundle;
+- provide a first-class deactivation command that restores the previous instruction files.
+
+## Non-goals
+
+Activation should not:
+
+- silently delete instruction files;
+- rewrite global Codex configuration without an explicit `--write` request;
+- treat ignored or untracked repo instruction files as shared repo policy by default;
+- execute policy-provided shell commands from untrusted repository content;
+- make `get`, `discover`, `inspect`, `validate`, or `index` mutate instruction files.
+
+## Modes
+
+### Global Codex activation
+
+Global Codex activation configures the user's Codex environment to ask the broker for task-specific instructions.
+
+Example commands:
+
+```bash
+agent-policy activate codex --global --dry-run
+agent-policy activate codex --global --write
+```
+
+The broker should inspect global Codex instruction sources such as:
+
+```text
+~/.codex/AGENTS.override.md
+~/.codex/AGENTS.md
+$CODEX_HOME/AGENTS.override.md
+$CODEX_HOME/AGENTS.md
+```
+
+The exact Codex home resolution should match the configured `codex.home`, then `CODEX_HOME`, then the default Codex home when applicable.
+
+Global activation should:
+
+1. discover the active global Codex instruction files;
+2. archive the original files and write a manifest;
+3. import reusable guidance into broker-managed global policy or supporting knowledge;
+4. replace the global Codex instruction file with a small broker bootstrap;
+5. validate the resulting broker configuration;
+6. optionally run an activation smoke test.
+
+Global activation is useful when repositories do not commit `AGENTS.md`, when `AGENTS.md` is ignored by many users, or when a user wants the broker to be the default instruction source across repositories.
+
+### Repo activation
+
+Repo activation configures one repository to use the broker.
+
+Example commands:
+
+```bash
+agent-policy activate repo --repo . --dry-run
+agent-policy activate repo --repo . --write
+```
+
+Repo activation should inspect supported repo instruction sources, including:
+
+```text
+AGENTS.override.md
+AGENTS.md
+**/AGENTS.override.md
+**/AGENTS.md
+CLAUDE.md
+**/CLAUDE.md
+.github/copilot-instructions.md
+.cursor/rules/**
+```
+
+Repo activation should:
+
+1. run discovery and inspection;
+2. classify instruction sources by path scope, trust, and Git state;
+3. generate or update broker-managed policy drafts when requested;
+4. archive files that will be replaced;
+5. replace the active repo instruction file with a broker bootstrap;
+6. validate the policy/configuration state;
+7. build or refresh local indexes;
+8. print a rollback command.
+
+Repo activation should only mutate files when `--write` is provided. Without `--write`, it should print a plan.
+
+### Local-only activation
+
+Some users intentionally keep `AGENTS.md` ignored or untracked. Local-only activation may create or update an ignored local bootstrap, but it should be explicit.
+
+Example:
+
+```bash
+agent-policy activate repo --repo . --local --write
+```
+
+The command output should clearly state that the activation affects only the current checkout and is not shared with other users, CI, or remote coding agents.
+
+### Hybrid mode
+
+A deployment may use global Codex activation plus repo-local policy files. In this model, the global Codex bootstrap calls the broker everywhere, and each repository contributes policies through `.agent-policy.yaml` and `.agent-policy/policies/**`.
+
+This mode avoids relying on committed repo `AGENTS.md` files while still allowing repository-specific policy selection.
+
+## Git state classification
+
+Instruction files must be classified by Git state before activation decisions are made.
+
+```text
+tracked      shared repo instruction source
+untracked    local or draft instruction source
+ignored      local-only instruction source
+missing      no instruction source
+```
+
+Suggested probes:
+
+```bash
+git ls-files --error-unmatch AGENTS.md
+git check-ignore -v AGENTS.md
+git status --ignored --short AGENTS.md
+```
+
+If a repo `AGENTS.md` is ignored, repo activation must not silently create a local-only bootstrap. It should require one of:
+
+```text
+--local                   create a local ignored bootstrap
+--force-track-bootstrap   create and force-add a tracked bootstrap
+--global                  prefer global Codex activation
+```
+
+If `AGENTS.md` is already tracked, ignore rules do not affect it.
+
+## Archive layout
+
+Repo activation archives should live inside the repository by default:
+
+```text
+.agent-policy/
+  archive/
+    activations/
+      2026-06-01T22-30-00Z/
+        manifest.json
+        files/
+          AGENTS.md
+          frontend/AGENTS.md
+          CLAUDE.md
+```
+
+Global activation archives should live outside the repository, for example:
+
+```text
+~/.config/agent-policy/
+  archive/
+    activations/
+      2026-06-01T22-30-00Z/
+        manifest.json
+        files/
+          AGENTS.md
+          AGENTS.override.md
+```
+
+Archive locations should be configurable. Archives are provenance and rollback material; they should not be deleted automatically.
+
+## Manifest schema
+
+Each activation archive should include a manifest similar to:
+
+```json
+{
+  "activation_id": "act_2026_06_01_223000",
+  "mode": "repo",
+  "agent": "codex",
+  "repo": "/home/user/work/example",
+  "created_at": "2026-06-01T22:30:00Z",
+  "modified_files": [
+    {
+      "path": "AGENTS.md",
+      "state_before": "tracked",
+      "action": "replaced_with_bootstrap",
+      "archive_path": "files/AGENTS.md",
+      "sha256_before": "...",
+      "sha256_after": "..."
+    }
+  ],
+  "created_files": [
+    {
+      "path": ".agent-policy/policies/repo.baseline.yaml",
+      "action": "created"
+    }
+  ],
+  "restore_command": "agent-policy deactivate repo --repo . --activation act_2026_06_01_223000 --restore"
+}
+```
+
+The manifest should record enough information to support dry-run restore, conflict detection, and exact rollback.
+
+## Bootstrap template
+
+A minimal bootstrap should tell the coding agent to request task-specific instructions before editing.
+
+Example:
+
+````md
+# Agent instructions
+
+Before changing code, classify the user task as one of:
+
+- `fix_bug` — fix incorrect behavior, typo, broken build, failing test, or regression
+- `add_feature` — add new user-visible or API behavior
+- `refactor` — restructure code without intended behavior change
+- `test` — add or update tests only
+- `docs` — documentation-only change
+
+Then request task-specific policy guidance:
+
+```bash
+agent-policy get --repo . --task "$USER_TASK" --type "<task_type>"
+```
+
+If relevant files are known, include them with `--files`. If risk areas are obvious, include applicable `--risk` flags.
+
+Follow the returned instruction bundle. If lookup fails, make the smallest safe change, inspect nearby code and tests, avoid risky areas unless explicitly requested, and report that policy lookup was unavailable.
+
+In the final response, mention the policy version used and checks run.
+````
+
+The bootstrap should remain small. Detailed policy belongs in broker-managed policy files or indexed supporting knowledge.
+
+## Deactivation and restore
+
+Activation must be reversible.
+
+Example commands:
+
+```bash
+agent-policy deactivate repo --repo . --dry-run
+agent-policy deactivate repo --repo . --restore
+agent-policy deactivate repo --repo . --activation act_2026_06_01_223000 --restore
+
+agent-policy deactivate codex --global --dry-run
+agent-policy deactivate codex --global --restore
+```
+
+Deactivation should:
+
+1. find the requested activation archive;
+2. verify current files still match the broker-managed state where possible;
+3. restore archived files to their original paths;
+4. remove broker-created bootstrap files when safe;
+5. leave generated policies and indexes in place unless explicit cleanup flags are supplied;
+6. print a summary of restored, removed, skipped, and conflicted files.
+
+Optional cleanup flags may include:
+
+```text
+--remove-generated-policies
+--remove-index
+--force
+```
+
+If a file changed after activation, deactivation should refuse to overwrite it unless `--force` is supplied.
+
+## Safety rules
+
+Activation should be transactional:
+
+1. compute the plan;
+2. validate inputs;
+3. archive originals;
+4. write broker-managed files;
+5. validate the result;
+6. build indexes;
+7. run smoke checks when requested.
+
+If a step fails before writes, no files should change. If a step fails after writes, the command should print the restore command and archive location.
+
+Activation and deactivation should support `--dry-run` and show exactly what would be changed.
+
+## Command mutability
+
+Read-only commands:
+
+```text
+agent-policy get
+agent-policy discover
+agent-policy inspect
+agent-policy validate
+agent-policy index
+agent-policy migrate --dry-run
+agent-policy activate ... --dry-run
+agent-policy deactivate ... --dry-run
+```
+
+Mutating commands:
+
+```text
+agent-policy migrate --write
+agent-policy activate ... --write
+agent-policy deactivate ... --restore
+```
+
+Lookup commands must not rewrite instruction files.
