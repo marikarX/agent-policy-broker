@@ -1636,14 +1636,20 @@ where
     I: IntoIterator<Item = P>,
     P: AsRef<Path>,
 {
+    let canonical_repo_root = fs::canonicalize(repo_root)
+        .with_context(|| format!("failed to resolve repository root {}", repo_root.display()))?;
     let mut policy_files = Vec::new();
 
     for policy_dir in policy_dirs {
-        let policy_dir = resolve_policy_dir(repo_root, policy_dir.as_ref());
-
-        if !policy_dir.exists() {
-            continue;
-        }
+        let policy_dir = match resolve_repo_local_policy_dir(
+            repo_root,
+            &canonical_repo_root,
+            policy_dir.as_ref(),
+        ) {
+            Ok(Some(policy_dir)) => policy_dir,
+            Ok(None) => continue,
+            Err(error) => bail!("{error}"),
+        };
 
         if !policy_dir.is_dir() {
             bail!(
@@ -1693,13 +1699,41 @@ where
     let repo_root = repo_root.as_ref();
     let mut policy_files = Vec::new();
     let mut issues = Vec::new();
+    let canonical_repo_root = match fs::canonicalize(repo_root) {
+        Ok(canonical_repo_root) => canonical_repo_root,
+        Err(error) => {
+            push_policy_issue(
+                &mut issues,
+                PolicyValidationSeverity::Error,
+                "repo_root_invalid",
+                format!("Failed to resolve repository root: {error}"),
+                Some(repo_root),
+                None,
+            );
+            return (policy_files, issues);
+        }
+    };
 
     for policy_dir in policy_dirs {
-        let policy_dir = resolve_policy_dir(repo_root, policy_dir.as_ref());
-
-        if !policy_dir.exists() {
-            continue;
-        }
+        let policy_dir = match resolve_repo_local_policy_dir(
+            repo_root,
+            &canonical_repo_root,
+            policy_dir.as_ref(),
+        ) {
+            Ok(Some(policy_dir)) => policy_dir,
+            Ok(None) => continue,
+            Err(error) => {
+                push_policy_issue(
+                    &mut issues,
+                    PolicyValidationSeverity::Error,
+                    "policy_dir_outside_repo",
+                    error,
+                    Some(&resolve_policy_dir(repo_root, policy_dir.as_ref())),
+                    None,
+                );
+                continue;
+            }
+        };
 
         if !policy_dir.is_dir() {
             push_policy_issue(
@@ -1991,6 +2025,31 @@ fn push_policy_issue(
         path: path.map(|path| path.display().to_string()),
         field: field.map(str::to_string),
     });
+}
+
+fn resolve_repo_local_policy_dir(
+    repo_root: &Path,
+    canonical_repo_root: &Path,
+    policy_dir: &Path,
+) -> std::result::Result<Option<PathBuf>, String> {
+    let resolved = resolve_policy_dir(repo_root, policy_dir);
+
+    if !resolved.exists() {
+        return Ok(None);
+    }
+
+    let canonical_policy_dir = fs::canonicalize(&resolved).map_err(|error| {
+        format!(
+            "Failed to resolve configured local policy path {}: {error}",
+            resolved.display()
+        )
+    })?;
+
+    if !canonical_policy_dir.starts_with(canonical_repo_root) {
+        return Err("Configured local policy path must resolve inside the repository.".to_string());
+    }
+
+    Ok(Some(resolved))
 }
 
 fn resolve_policy_dir(repo_root: &Path, policy_dir: &Path) -> PathBuf {
@@ -2293,6 +2352,58 @@ No task summary provided.
     #[test]
     fn version_is_non_empty() {
         assert!(!version().is_empty());
+    }
+
+    #[test]
+    fn collect_policy_files_rejects_absolute_path_outside_repo() {
+        let temp = test_temp_dir("agent-policy-core-absolute-outside");
+        let repo = temp.join("repo");
+        let outside = temp.join("outside");
+        fs::create_dir_all(&repo).expect("create repo");
+        fs::create_dir_all(&outside).expect("create outside directory");
+        fs::write(outside.join("secret.yml"), "not: a policy\n").expect("write outside yaml");
+
+        let (policy_files, issues) = collect_policy_files(&repo, [&outside]);
+
+        assert!(policy_files.is_empty());
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].code, "policy_dir_outside_repo");
+    }
+
+    #[test]
+    fn collect_policy_files_rejects_parent_traversal_outside_repo() {
+        let temp = test_temp_dir("agent-policy-core-parent-outside");
+        let repo = temp.join("repo");
+        let outside = temp.join("outside");
+        fs::create_dir_all(&repo).expect("create repo");
+        fs::create_dir_all(&outside).expect("create outside directory");
+        fs::write(outside.join("secret.yml"), "not: a policy\n").expect("write outside yaml");
+
+        let (policy_files, issues) = collect_policy_files(&repo, ["../outside"]);
+
+        assert!(policy_files.is_empty());
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].code, "policy_dir_outside_repo");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_policy_files_rejects_symlink_escape_outside_repo() {
+        use std::os::unix::fs::symlink;
+
+        let temp = test_temp_dir("agent-policy-core-symlink-outside");
+        let repo = temp.join("repo");
+        let outside = temp.join("outside");
+        fs::create_dir_all(&repo).expect("create repo");
+        fs::create_dir_all(&outside).expect("create outside directory");
+        fs::write(outside.join("secret.yml"), "not: a policy\n").expect("write outside yaml");
+        symlink(&outside, repo.join("linked-policies")).expect("create policy dir symlink");
+
+        let (policy_files, issues) = collect_policy_files(&repo, ["linked-policies"]);
+
+        assert!(policy_files.is_empty());
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].code, "policy_dir_outside_repo");
     }
 
     #[test]
@@ -3130,6 +3241,16 @@ No task summary provided.
         assert_eq!(markdown, SAMPLE_BUNDLE_MARKDOWN);
         assert!(!markdown.contains("applies_when:"));
         assert!(!markdown.contains("instructions:"));
+    }
+
+    fn test_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time after unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+        fs::create_dir_all(&path).expect("create temp dir");
+        path
     }
 
     fn fixture_simple_repo() -> PathBuf {
