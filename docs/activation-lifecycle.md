@@ -239,19 +239,21 @@ repo/.agent-policy/**     repo policies and archive
 
 This is useful when repos ignore `AGENTS.md` or when activation is personal.
 
-### CI/comment strategy
+### CI activation strategy
 
-For agents that cannot reliably run local commands, activation may be a CI or PR-comment workflow rather than an instruction-file workflow.
+For agents that cannot reliably run local commands, activation may be a CI workflow rather than an instruction-file workflow. Prefer writing the selected policy bundle to the CI job summary or to restricted build artifacts so the report stays within the workflow access boundary and does not require write permissions.
 
 Example:
 
 ```text
 GitHub Action runs agent-policy on changed files
-        -> comments selected policy bundle on the PR
-        -> coding agent and reviewers see expected policy guidance
+        -> writes selected policy bundle to the job summary
+        -> coding agent and reviewers with workflow access see expected policy guidance
 ```
 
-This strategy is especially useful for cloud coding-agent workflows.
+Posting policy bundles to pull request comments is unsafe by default because bundles may contain private policy text, task details, sensitive paths, repository metadata, warnings, required checks, blocked actions, and source references. Only enable PR comments after an explicit operator opt-in for repositories and events where public disclosure is intended. Comment workflows should gate on trusted events, avoid untrusted or public fork pull requests, use least-privilege permissions, redact sensitive fields before publishing, and document that comments disclose the selected bundle to everyone who can view the pull request.
+
+This strategy is especially useful for cloud coding-agent workflows when its output is kept in a trusted CI surface.
 
 ## Instruction reference graph
 
