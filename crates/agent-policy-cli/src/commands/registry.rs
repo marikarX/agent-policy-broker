@@ -161,18 +161,22 @@ fn is_local_path_registry(cache_dir: &Path, url_path: Option<&Path>) -> bool {
 }
 
 fn validate_pinned_ref(cache_dir: &Path, requested_ref: &str, head: &str) -> anyhow::Result<()> {
-    if is_full_sha(requested_ref) {
-        if head == requested_ref {
-            return Ok(());
-        }
+    if !is_full_sha(requested_ref) {
         anyhow::bail!(
-            "registry_pinned_mismatch: registry cache {} is at commit {}, expected {}",
+            "registry_pinned_ref_invalid: pinned registry cache {} requires a full 40-character commit SHA, got `{}`",
             cache_dir.display(),
-            head,
             requested_ref
         );
     }
-    validate_requested_ref_if_available(cache_dir, requested_ref, head)
+    if head == requested_ref {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "registry_pinned_mismatch: registry cache {} is at commit {}, expected {}",
+        cache_dir.display(),
+        head,
+        requested_ref
+    );
 }
 
 fn validate_requested_ref_if_available(

@@ -603,6 +603,52 @@ instructions:
     }
 
     #[test]
+    fn registry_sync_pinned_rejects_mutable_branch_ref() {
+        let temp = TempDir::new("registry-sync-pinned-branch");
+        let repo = temp.path();
+        let cache_dir = repo.join("registry-cache");
+        init_git_registry(&cache_dir);
+        let registry = test_registry(&cache_dir, "main", SyncMode::Pinned);
+
+        let error = sync_registry(repo, &registry, false).expect_err("pinned branch ref");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("registry_pinned_ref_invalid"));
+        assert!(message.contains("full 40-character commit SHA"));
+    }
+
+    #[test]
+    fn registry_sync_pinned_rejects_missing_ref() {
+        let temp = TempDir::new("registry-sync-pinned-missing-ref");
+        let repo = temp.path();
+        let cache_dir = repo.join("registry-cache");
+        init_git_registry(&cache_dir);
+        let registry = test_registry(&cache_dir, "does-not-exist", SyncMode::Pinned);
+
+        let error = sync_registry(repo, &registry, false).expect_err("pinned missing ref");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("registry_pinned_ref_invalid"));
+        assert!(message.contains("does-not-exist"));
+    }
+
+    #[test]
+    fn registry_sync_pinned_rejects_abbreviated_commit_ref() {
+        let temp = TempDir::new("registry-sync-pinned-abbrev");
+        let repo = temp.path();
+        let cache_dir = repo.join("registry-cache");
+        let head = init_git_registry(&cache_dir);
+        let abbreviated = &head[..12];
+        let registry = test_registry(&cache_dir, abbreviated, SyncMode::Pinned);
+
+        let error = sync_registry(repo, &registry, false).expect_err("pinned abbreviated ref");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("registry_pinned_ref_invalid"));
+        assert!(message.contains(abbreviated));
+    }
+
+    #[test]
     fn registry_sync_missing_registry_reports_useful_error() {
         let temp = TempDir::new("registry-sync-missing");
         let repo = temp.path();
