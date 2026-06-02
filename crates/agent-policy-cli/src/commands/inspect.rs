@@ -429,7 +429,7 @@ fn target_policy_for_candidate(candidate: &MarkdownInstructionCandidate, topic: 
     }
 
     if candidate.provenance.scope != "." {
-        let scope = normalize_scope_prefix(&candidate.provenance.scope).replace('/', ".");
+        let scope = policy_id_scope_component(&candidate.provenance.scope);
         if !scope.is_empty() {
             return format!("local.{scope}.{topic}");
         }
@@ -442,6 +442,32 @@ fn target_policy_for_candidate(candidate: &MarkdownInstructionCandidate, topic: 
         "package_manager" => "repo.package-manager".to_string(),
         _ => "repo.instructions".to_string(),
     }
+}
+
+fn policy_id_scope_component(scope: &str) -> String {
+    normalize_scope_prefix(scope)
+        .split('/')
+        .filter_map(sanitize_policy_id_segment)
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+fn sanitize_policy_id_segment(segment: &str) -> Option<String> {
+    let mut sanitized = String::new();
+    let mut last_was_separator = false;
+
+    for character in segment.chars() {
+        if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+            sanitized.push(character.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if !last_was_separator {
+            sanitized.push('-');
+            last_was_separator = true;
+        }
+    }
+
+    let sanitized = sanitized.trim_matches('-').to_string();
+    (!sanitized.is_empty()).then_some(sanitized)
 }
 
 fn candidate_topic(candidate: &MarkdownInstructionCandidate) -> &'static str {
@@ -759,7 +785,9 @@ fn suggested_policy_path(policy_id: &str) -> String {
 
 fn render_policy_draft_yaml(draft: &PolicyDraft) -> String {
     let mut out = String::new();
-    out.push_str(&format!("id: {}\n", draft.id));
+    out.push_str("id: ");
+    out.push_str(&yaml_string(&draft.id));
+    out.push('\n');
     out.push_str("version: 1\n");
     out.push_str("status: draft\n\n");
     out.push_str("applies_when:");
@@ -1349,9 +1377,9 @@ pub(crate) fn render_migration_dry_run_markdown(report: &MigrationDryRunReport) 
                 .collect::<Vec<_>>()
                 .join(", "),
         );
-        out.push_str("\n\n```yaml\n");
-        out.push_str(&draft.policy_yaml);
-        out.push_str("```\n\n");
+        out.push_str("\n");
+        out.push_str(&markdown_code_block("yaml", &draft.policy_yaml));
+        out.push_str("\n");
     }
 
     out
@@ -1359,6 +1387,36 @@ pub(crate) fn render_migration_dry_run_markdown(report: &MigrationDryRunReport) 
 
 fn markdown_inline(text: &str) -> String {
     text.replace('`', "\\`").replace(['\n', '\r'], " ")
+}
+
+fn markdown_code_block(language: &str, content: &str) -> String {
+    let fence_len = max_backtick_run(content).saturating_add(1).max(3);
+    let fence = "`".repeat(fence_len);
+    let mut out = String::new();
+    out.push_str(&fence);
+    out.push_str(language);
+    out.push('\n');
+    out.push_str(content);
+    if !content.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&fence);
+    out.push('\n');
+    out
+}
+
+fn max_backtick_run(content: &str) -> usize {
+    let mut max_run = 0;
+    let mut current_run = 0;
+    for character in content.chars() {
+        if character == '`' {
+            current_run += 1;
+            max_run = max_run.max(current_run);
+        } else {
+            current_run = 0;
+        }
+    }
+    max_run
 }
 
 fn render_duplicate_section(out: &mut String, duplicates: &[InspectionDuplicate]) {

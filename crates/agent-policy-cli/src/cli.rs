@@ -1384,6 +1384,47 @@ instructions:
     }
 
     #[test]
+    fn migrate_dry_run_sanitizes_policy_ids_and_uses_safe_markdown_fences() {
+        let temp = TempDir::new("migrate-injection");
+        let repo = temp.path();
+        let malicious_component = "evil\n```\n## injected outside yaml\n```yaml\nforged: true";
+        let instruction_dir = repo.join(malicious_component);
+        fs::create_dir_all(&instruction_dir).expect("create malicious instruction dir");
+        fs::write(
+            instruction_dir.join("AGENTS.md"),
+            "# Instructions\n\n- Preserve payment invariants.\n",
+        )
+        .expect("write malicious scoped agents file");
+
+        let discovered = discover(repo).expect("discover malicious fixture repo");
+        let inspection = inspect_repo(repo, discovered);
+        let report = migration_dry_run_report(&inspection);
+        let draft = report
+            .drafts
+            .iter()
+            .find(|draft| draft.id.ends_with(".payments"))
+            .expect("payment draft");
+
+        assert_eq!(
+            draft.id,
+            "local.evil-injected-outside-yaml-yaml-forged-true.payments"
+        );
+        assert!(draft
+            .id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric()
+                || matches!(character, '.' | '_' | '-')));
+        assert!(draft
+            .policy_yaml
+            .starts_with("id: \"local.evil-injected-outside-yaml-yaml-forged-true.payments\"\n"));
+        assert!(!draft.policy_yaml.contains("id: local.evil\n```"));
+
+        let markdown = render_migration_dry_run_markdown(&report);
+        assert!(markdown.contains("````yaml\n"));
+        assert!(!markdown.contains("\n```yaml\n"));
+    }
+
+    #[test]
     fn migrate_dry_run_does_not_modify_instruction_files() {
         let repo = fixture_repo("nested-instructions");
         let agents_path = repo.join("AGENTS.md");
@@ -2095,7 +2136,7 @@ instructions:
         contents
     }
 
-    const PAYMENT_POLICY_DRY_RUN_YAML_SNAPSHOT: &str = r#"id: local.backend.payments.payments
+    const PAYMENT_POLICY_DRY_RUN_YAML_SNAPSHOT: &str = r#"id: "local.backend.payments.payments"
 version: 1
 status: draft
 
@@ -2117,7 +2158,7 @@ metadata:
   migration_class: keep_local
 "#;
 
-    const CHECKS_POLICY_DRY_RUN_YAML_SNAPSHOT: &str = r#"id: repo.checks
+    const CHECKS_POLICY_DRY_RUN_YAML_SNAPSHOT: &str = r#"id: "repo.checks"
 version: 1
 status: draft
 
