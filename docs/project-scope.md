@@ -14,12 +14,17 @@ The open-source core should include:
 - policy schema and validation;
 - instruction source discovery;
 - repository inspection and migration reports;
+- broker activation and bootstrap generation;
+- instruction archive manifests and restore support;
+- safe deactivation and rollback;
 - local metadata and keyword indexes;
 - optional local vector index;
 - deterministic retrieval, ranking, and conflict resolution;
 - local instruction bundle compilation;
 - safe defaults and privacy-conscious behavior;
 - examples for common coding-agent workflows.
+
+Activation and deactivation belong in the local-first core because the broker may replace active instruction files with a small bootstrap. Any workflow that can replace user or repository instructions must also provide a clear archive and restore path.
 
 ## Optional deployment modes
 
@@ -45,21 +50,6 @@ It is fine to describe generic organization-scale needs such as:
 - compliance reporting;
 - editor and CI integrations.
 
-But these should be framed as possible deployment capabilities, not as paid-feature commitments.
-
-## Documentation rule
-
-Use neutral language:
-
-```text
-Future organization deployments may support...
-```
-
-Avoid language like:
-
-```text
-Paid tier includes...
-Enterprise plan includes...
-```
+But these should be framed as possible deployment capabilities, not packaging commitments.
 
 This keeps the repository focused on adoption, trust, and implementation clarity.
