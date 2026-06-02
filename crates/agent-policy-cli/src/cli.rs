@@ -778,6 +778,44 @@ instructions:
         assert!(values.contains(&("task_types".to_string(), "implementation".to_string())));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn index_permission_hardening_skips_cache_links() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new("index-cache-links");
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).expect("create repo");
+        write_get_policy_fixture(&repo);
+
+        let cache_dir = temp.path().join("cache");
+        let index_dir = cache_dir.join("indexes").join("repo");
+        fs::create_dir_all(&index_dir).expect("create index dir");
+
+        let outside_file = temp.path().join("outside-file.txt");
+        fs::write(&outside_file, "outside").expect("write outside file");
+        fs::set_permissions(&outside_file, fs::Permissions::from_mode(0o644))
+            .expect("set outside file mode");
+        symlink(&outside_file, index_dir.join("planted-symlink")).expect("create planted symlink");
+
+        let hardlink_target = temp.path().join("hardlink-target.txt");
+        fs::write(&hardlink_target, "hardlink target").expect("write hardlink target");
+        fs::set_permissions(&hardlink_target, fs::Permissions::from_mode(0o644))
+            .expect("set hardlink target mode");
+        fs::hard_link(&hardlink_target, index_dir.join("planted-hardlink"))
+            .expect("create planted hardlink");
+
+        build_metadata_index_with_cache_dir(&repo, &AgentPolicyConfig::default(), &cache_dir)
+            .expect("build index");
+
+        assert_eq!(path_mode(&outside_file), 0o644);
+        assert_eq!(path_mode(&hardlink_target), 0o644);
+        assert!(fs::symlink_metadata(index_dir.join("planted-symlink"))
+            .expect("read planted symlink metadata")
+            .file_type()
+            .is_symlink());
+    }
+
     #[test]
     fn index_builds_fulltext_candidates_with_nested_provenance_and_selected_docs() {
         let temp = TempRepo::copy_fixture("nested-instructions");
