@@ -19,16 +19,25 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository
+      - name: Check out trusted agent-policy source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: agent-policy-source
+          persist-credentials: false
+
+      - name: Check out pull request for analysis
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          path: pull-request
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build agent-policy
-        run: cargo build --release -p agent-policy-cli
+      - name: Build trusted agent-policy
+        run: cargo build --manifest-path agent-policy-source/Cargo.toml --release -p agent-policy-cli
 
       - name: Collect changed files
         id: changed-files
@@ -36,11 +45,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          git fetch --no-tags --prune --depth=1 origin \
-            "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
-
-          base_commit="$(git merge-base "origin/${{ github.base_ref }}" HEAD)"
-          git diff --name-only --diff-filter=ACMR "$base_commit" HEAD > changed-files.txt
+          git -C pull-request diff --name-only --diff-filter=ACMR \
+            "${{ github.event.pull_request.base.sha }}" HEAD > changed-files.txt
 
           {
             echo "count=$(wc -l < changed-files.txt | tr -d ' ')"
@@ -53,7 +59,7 @@ jobs:
         run: |
           set +e
 
-          binary="target/release/agent-policy"
+          binary="agent-policy-source/target/release/agent-policy"
           report="agent-policy-report.md"
           task="Review pull request changes"
 
@@ -61,14 +67,14 @@ jobs:
 
           if [ "${#changed_files[@]}" -gt 0 ]; then
             "$binary" get \
-              --repo . \
+              --repo pull-request \
               --task "$task" \
               --type review \
               --files "${changed_files[@]}" \
               --format markdown > "$report" 2> agent-policy-error.log
           else
             "$binary" inspect \
-              --repo . \
+              --repo pull-request \
               --format markdown > "$report" 2> agent-policy-error.log
           fi
 
