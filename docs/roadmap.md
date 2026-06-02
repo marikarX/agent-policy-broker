@@ -102,7 +102,8 @@ Planned capabilities:
 - replace active instruction files with a small broker bootstrap;
 - distinguish tracked, untracked, ignored, and local-only instruction files;
 - warn or require explicit flags when repo `AGENTS.md` is ignored;
-- validate and index after activation;
+- validate and index only active instruction sources after activation;
+- keep activation archives as rollback-only provenance that is excluded from runtime retrieval;
 - provide activation smoke-test output;
 - `agent-policy deactivate repo --repo . --dry-run`;
 - `agent-policy deactivate repo --repo . --restore`;
@@ -122,7 +123,8 @@ Planned capabilities:
 - local SQLite metadata index;
 - Tantivy full-text index stored as `fulltext/`;
 - index manifest with registry commit;
-- local index over policy files, nested instruction files, archived instructions, and selected documentation;
+- local index over policy files, active nested instruction files, and selected documentation;
+- exclude activation archives from runtime retrieval indexes; if referenced for audits, tag them as archived, stale, and rollback-only so they cannot become authoritative guidance;
 - stale-index detection;
 - deduplication of overlapping instructions;
 - omission reporting for candidates excluded by the context budget.
