@@ -382,8 +382,6 @@ fn build_instruction_bundle_inner(
         let source = policy_source_ref(matched_policy.loaded);
         let mut included_policy_content = false;
         let mut conflict_omitted_policy_content = false;
-        let has_instruction_content = !policy.instructions.is_empty();
-
         for instruction in &policy.instructions {
             if conflict_resolution
                 .omitted_instructions
@@ -414,13 +412,6 @@ fn build_instruction_bundle_inner(
                 source: source.clone(),
                 reason: matched_policy.reason.clone(),
             });
-        }
-
-        if has_instruction_content && !included_policy_content {
-            if !conflict_omitted_policy_content {
-                omitted += 1;
-                continue;
-            }
         }
 
         for check in &policy.required_checks {
@@ -2821,11 +2812,10 @@ No task summary provided.
             },
             "Path-scoped ordinary guidance for attacker-controlled path.",
         );
-        path_scoped.policy.required_checks = vec!["path.optional_check".into()];
-        path_scoped.policy.blocked_actions =
-            vec![BlockedAction("PATH BLOCK: ordinary path action.".into())];
+        path_scoped.policy.required_checks = vec!["path.required_check".into()];
+        path_scoped.policy.blocked_actions = vec![BlockedAction("PATH BLOCK: path action.".into())];
 
-        let bundle = build_instruction_bundle(
+        let error = build_instruction_bundle(
             &test_intent(vec!["src/attacker/payload.rs"]),
             &[path_scoped, global],
             BundleBuildOptions {
@@ -2835,38 +2825,11 @@ No task summary provided.
                 max_blocked_actions: Some(1),
             },
         )
-        .expect("bundle should build");
+        .expect_err("required checks and blocked actions should fail closed when over budget");
 
-        assert_eq!(bundle.instructions.len(), 1);
-        assert_eq!(
-            bundle.instructions[0].text,
-            "Always preserve baseline safety guidance."
-        );
-        assert_eq!(
-            bundle
-                .required_checks
-                .iter()
-                .map(|check| check.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["global.required_check"]
-        );
-        assert_eq!(
-            bundle
-                .blocked_actions
-                .iter()
-                .map(|action| action.0.as_str())
-                .collect::<Vec<_>>(),
-            vec!["GLOBAL BLOCK: baseline action."]
-        );
-        assert_eq!(
-            bundle
-                .sources
-                .iter()
-                .map(|source| source.0.as_str())
-                .collect::<Vec<_>>(),
-            vec!["zz.global.safety@1"]
-        );
-        assert_eq!(bundle.context_budget.candidate_policies_omitted, Some(1));
+        assert!(error.to_string().contains("security_budget_exceeded"));
+        assert!(error.to_string().contains("1 required check"));
+        assert!(error.to_string().contains("1 blocked action"));
     }
 
     #[test]
@@ -2982,6 +2945,94 @@ No task summary provided.
             vec!["Do not edit generated code.", "Do not commit secrets."]
         );
         assert_eq!(bundle.context_budget.candidate_policies_omitted, Some(0));
+    }
+
+    #[test]
+    fn duplicate_instruction_does_not_skip_safety_controls() {
+        let first = test_policy(
+            "policy.first",
+            AppliesWhen::default(),
+            "Use exact duplicate guidance.",
+        );
+
+        let mut second = test_policy(
+            "policy.second",
+            AppliesWhen::default(),
+            "Use exact duplicate guidance.",
+        );
+        second.policy.required_checks = vec!["cargo test".into()];
+        second.policy.blocked_actions = vec![BlockedAction("Do not commit secrets.".into())];
+
+        let bundle = build_instruction_bundle(
+            &test_intent(Vec::new()),
+            &[first, second],
+            BundleBuildOptions {
+                max_tokens: Some(900),
+                max_instructions: Some(8),
+                max_required_checks: Some(4),
+                max_blocked_actions: Some(4),
+            },
+        )
+        .expect("bundle should build");
+
+        assert_eq!(
+            bundle
+                .instructions
+                .iter()
+                .map(|instruction| instruction.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Use exact duplicate guidance."]
+        );
+        assert_eq!(
+            bundle
+                .required_checks
+                .iter()
+                .map(|check| check.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["cargo test"]
+        );
+        assert_eq!(
+            bundle
+                .blocked_actions
+                .iter()
+                .map(|action| action.0.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Do not commit secrets."]
+        );
+        assert_eq!(bundle.context_budget.candidate_policies_omitted, Some(0));
+    }
+
+    #[test]
+    fn instruction_budget_omission_still_fails_closed_for_safety_controls() {
+        let first = test_policy(
+            "policy.first",
+            AppliesWhen::default(),
+            "Fill the only instruction slot.",
+        );
+
+        let mut second = test_policy(
+            "policy.second",
+            AppliesWhen::default(),
+            "Omit this instruction due to budget.",
+        );
+        second.policy.required_checks = vec!["cargo test".into()];
+        second.policy.blocked_actions = vec![BlockedAction("Do not commit secrets.".into())];
+
+        let error = build_instruction_bundle(
+            &test_intent(Vec::new()),
+            &[first, second],
+            BundleBuildOptions {
+                max_tokens: Some(900),
+                max_instructions: Some(1),
+                max_required_checks: Some(0),
+                max_blocked_actions: Some(0),
+            },
+        )
+        .expect_err("safety control omission should fail closed even if instructions are omitted");
+
+        assert!(error.to_string().contains("security_budget_exceeded"));
+        assert!(error.to_string().contains("1 required check"));
+        assert!(error.to_string().contains("1 blocked action"));
     }
 
     #[test]
