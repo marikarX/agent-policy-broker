@@ -219,7 +219,7 @@ pub fn load_config(repo_path: impl AsRef<Path>) -> Result<AgentPolicyConfig> {
         });
     }
 
-    let repository = Some(read_config_patch(&config_path)?);
+    let repository = Some(read_repository_config_patch(&config_path)?);
     resolve_config(ConfigPrecedenceLayers {
         repository,
         ..ConfigPrecedenceLayers::default()
@@ -486,6 +486,11 @@ fn read_config_patch(path: &Path) -> Result<AgentPolicyConfigPatch> {
         .with_context(|| format!("failed to parse config file {}", path.display()))
 }
 
+fn read_repository_config_patch(path: &Path) -> Result<AgentPolicyConfigPatch> {
+    let patch = read_config_patch(path)?;
+    patch.into_repository_safe_patch(path)
+}
+
 fn resolve_config(layers: ConfigPrecedenceLayers) -> Result<AgentPolicyConfig> {
     let mut config = AgentPolicyConfig::default();
 
@@ -587,6 +592,53 @@ struct OutputBudgetConfigPatch {
     max_blocked_actions: Option<u32>,
     include_examples: Option<bool>,
     include_explanations: Option<String>,
+}
+
+impl AgentPolicyConfigPatch {
+    fn into_repository_safe_patch(mut self, path: &Path) -> Result<Self> {
+        if self.registry.is_some() {
+            bail!(
+                "repository config {} must not configure registry; use trusted operator configuration",
+                path.display()
+            );
+        }
+
+        if self
+            .instruction_sources
+            .as_ref()
+            .and_then(|instruction_sources| instruction_sources.trusted.as_ref())
+            .is_some()
+        {
+            bail!(
+                "repository config {} must not configure instruction_sources.trusted",
+                path.display()
+            );
+        }
+
+        if let Some(output_budget) = &mut self.output_budget {
+            output_budget.clamp_to_repository_minimums();
+        }
+
+        Ok(self)
+    }
+}
+
+impl OutputBudgetConfigPatch {
+    fn clamp_to_repository_minimums(&mut self) {
+        let minimums = OutputBudgetConfig::default();
+        self.max_tokens = self
+            .max_tokens
+            .map(|max_tokens| max_tokens.max(minimums.max_tokens));
+        self.max_instructions = self
+            .max_instructions
+            .map(|max_instructions| max_instructions.max(minimums.max_instructions));
+        self.max_required_checks = self
+            .max_required_checks
+            .map(|max_required_checks| max_required_checks.max(minimums.max_required_checks));
+        self.max_blocked_actions = self
+            .max_blocked_actions
+            .map(|max_blocked_actions| max_blocked_actions.max(minimums.max_blocked_actions));
+    }
 }
 
 impl AgentPolicyConfig {

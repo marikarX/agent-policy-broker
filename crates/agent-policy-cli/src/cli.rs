@@ -512,8 +512,8 @@ instructions:
         copy_dir_all_without_git(&fixture_repo("local-registry"), &registry_cache)
             .expect("copy local registry fixture");
 
-        let config = load_config(&repo).expect("registry config should load");
-        let registry = config.registry.expect("registry should be configured");
+        let mut registry = test_registry(&registry_cache, "main", SyncMode::Manual);
+        registry.url = registry_cache.display().to_string();
 
         let policies =
             load_registry_policies(&repo, &registry).expect("local registry cache should load");
@@ -532,8 +532,9 @@ instructions:
     #[test]
     fn registry_sync_local_path_registry_is_noop_success() {
         let repo = fixture_repo("registry-app");
-        let config = load_config(&repo).expect("registry config should load");
-        let registry = config.registry.expect("registry should be configured");
+        let registry_dir = fixture_repo("local-registry");
+        let mut registry = test_registry(&registry_dir, "main", SyncMode::Manual);
+        registry.url = registry_dir.display().to_string();
 
         let report = sync_registry(&repo, &registry, true).expect("sync local path registry");
 

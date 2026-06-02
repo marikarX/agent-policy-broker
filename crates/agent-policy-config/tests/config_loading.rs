@@ -35,10 +35,10 @@ fn valid_agent_policy_yaml_loads_correctly() {
     assert_eq!(
         config.output_budget,
         OutputBudgetConfig {
-            max_tokens: 700,
-            max_instructions: 5,
-            max_required_checks: 3,
-            max_blocked_actions: 2,
+            max_tokens: 900,
+            max_instructions: 8,
+            max_required_checks: 4,
+            max_blocked_actions: 4,
             include_examples: false,
             include_explanations: "compact".to_string(),
         }
@@ -90,17 +90,80 @@ codex:
 }
 
 #[test]
-fn registry_config_loads_documented_git_shape() {
-    let repo_dir = fixture_repo("registry-app");
-
-    let config = load_config(&repo_dir).expect("registry config should parse");
+fn explicit_registry_config_loads_documented_git_shape() {
+    let config = load_config_from_path(fixture_path("valid.agent-policy.yaml"))
+        .expect("trusted explicit registry config should parse");
     let registry = config.registry.expect("registry should be configured");
 
     assert_eq!(registry.registry_type, "git");
-    assert_eq!(registry.url, "../local-registry");
+    assert_eq!(
+        registry.url,
+        "git@github.com:company/agent-policy-registry.git"
+    );
     assert_eq!(registry.r#ref, "main");
-    assert_eq!(registry.cache_dir, "../local-registry");
-    assert_eq!(registry.sync.mode, SyncMode::Manual);
+    assert_eq!(
+        registry.cache_dir,
+        "~/.cache/agent-policy/registries/company"
+    );
+    assert_eq!(registry.sync.mode, SyncMode::Auto);
+}
+
+#[test]
+fn repository_registry_config_is_rejected() {
+    let repo_dir = fixture_repo("registry-app");
+
+    let error = load_config(&repo_dir).expect_err("repo registry config should fail closed");
+
+    assert!(format!("{error:#}").contains("must not configure registry"));
+}
+
+#[test]
+fn repository_trusted_instruction_sources_are_rejected() {
+    let repo_dir = create_temp_dir("trusted-instructions");
+    fs::write(
+        repo_dir.join(".agent-policy.yaml"),
+        "instruction_sources:
+  trusted:
+    - ATTACKER.md
+",
+    )
+    .expect("config should be written");
+
+    let error = load_config(&repo_dir).expect_err("trusted repo instructions should fail closed");
+
+    assert!(format!("{error:#}").contains("must not configure instruction_sources.trusted"));
+}
+
+#[test]
+fn repository_output_budget_is_clamped_to_safe_minimums() {
+    let repo_dir = create_temp_dir("low-output-budget");
+    fs::write(
+        repo_dir.join(".agent-policy.yaml"),
+        r#"
+output_budget:
+  max_tokens: 1
+  max_instructions: 1
+  max_required_checks: 0
+  max_blocked_actions: 0
+  include_examples: true
+  include_explanations: terse
+"#,
+    )
+    .expect("config should be written");
+
+    let config = load_config(&repo_dir).expect("repo budget should be clamped");
+
+    assert_eq!(
+        config.output_budget,
+        OutputBudgetConfig {
+            max_tokens: 900,
+            max_instructions: 8,
+            max_required_checks: 4,
+            max_blocked_actions: 4,
+            include_examples: true,
+            include_explanations: "terse".to_string(),
+        }
+    );
 }
 
 #[test]
@@ -112,7 +175,8 @@ fn unsupported_registry_type_is_rejected() {
     )
     .expect("config should be written");
 
-    let error = load_config(&repo_dir).expect_err("unsupported registry type should fail");
+    let error = load_config_from_path(repo_dir.join(".agent-policy.yaml"))
+        .expect_err("unsupported registry type should fail");
 
     assert!(format!("{error:#}").contains("registry.type must be git"));
 }
