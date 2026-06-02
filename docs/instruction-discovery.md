@@ -33,8 +33,10 @@ Common sources include:
 AGENTS.override.md
 AGENTS.md
 CLAUDE.md
+GEMINI.md
 .github/copilot-instructions.md
-.cursor/rules/**
+.github/instructions/**/*.instructions.md
+.cursor/rules/**/*.mdc
 .agent-policy.yaml
 .agent-policy/policies/**
 ```
@@ -44,9 +46,10 @@ Nested examples:
 ```text
 repo/
   AGENTS.md
+  CLAUDE.md
   frontend/
     AGENTS.md
-    .cursor/rules/react.md
+    .cursor/rules/react.mdc
   backend/
     AGENTS.md
   backend/payments/
@@ -92,6 +95,65 @@ Discovery JSON should expose this distinction, for example:
 ```
 
 Activation uses this metadata to avoid silently creating local-only repo bootstraps.
+
+## Instruction reference graph
+
+Inspection should build an instruction reference graph across discovered instruction files. This prevents activation from breaking hybrid layouts where one agent instruction file delegates to another file.
+
+The graph should record:
+
+- source path;
+- adapter or source type;
+- directory scope;
+- Git state;
+- trust level;
+- inbound references;
+- outbound references;
+- symlink targets;
+- unresolved references;
+- inferred activation role, such as native entrypoint, shared canonical source, wrapper, supporting knowledge, or archive-only.
+
+References to detect include:
+
+```text
+Claude-style imports such as @AGENTS.md
+Markdown links to other instruction files
+plain mentions of AGENTS.md, CLAUDE.md, GEMINI.md, or .cursor/rules files
+symlinks between instruction files
+agent-specific include or import syntax when supported
+```
+
+The broker should normalize local references relative to the importing file, keep traversal inside configured roots, and record omissions for broken, ignored, unsafe, or unsupported references.
+
+Example graph output:
+
+```json
+{
+  "instruction_graph": [
+    {
+      "path": "CLAUDE.md",
+      "type": "claude_md",
+      "role": "native_entrypoint",
+      "references": [
+        {
+          "target": "AGENTS.md",
+          "kind": "import",
+          "syntax": "@AGENTS.md",
+          "resolved": true
+        }
+      ]
+    },
+    {
+      "path": "AGENTS.md",
+      "type": "agents_md",
+      "role": "shared_canonical",
+      "referenced_by": ["CLAUDE.md"]
+    }
+  ]
+}
+```
+
+Activation should use this graph to recommend hybrid strategies. If `CLAUDE.md` already imports `AGENTS.md`, replacing only `AGENTS.md` with a broker bootstrap may preserve the existing hybrid better than writing duplicate bootstraps into both files.
 
 ## Scope model
 
@@ -170,11 +232,23 @@ Possible output:
       "git_state": "ignored",
       "trusted": false
     }
+  ],
+  "instruction_graph": [
+    {
+      "path": "CLAUDE.md",
+      "role": "native_entrypoint",
+      "references": ["AGENTS.md"]
+    },
+    {
+      "path": "AGENTS.md",
+      "role": "shared_canonical",
+      "referenced_by": ["CLAUDE.md"]
+    }
   ]
 }
 ```
 
-Codex-compatible output may also include source byte metadata and an `omissions` list for skipped empty files or shadowed lower-precedence files.
+Codex-compatible output may also include source byte metadata and an `omissions` list for skipped empty files, shadowed lower-precedence files, or unresolved references.
 
 ## Runtime behavior
 
@@ -203,6 +277,7 @@ imported into broker-managed policy
 indexed as supporting knowledge
 archived for provenance and rollback
 replaced with a small broker bootstrap
+wrapped around a shared bootstrap
 left untouched when not selected for activation
 ```
 
@@ -211,7 +286,7 @@ Activation should never delete instruction files without archiving them first. I
 ```text
 --local                   create a local ignored bootstrap
 --force-track-bootstrap   create and force-add a tracked bootstrap
---global                  use global Codex activation instead
+--global                  use global activation instead
 ```
 
 See [Activation lifecycle](activation-lifecycle.md).
@@ -267,10 +342,11 @@ Metadata to store:
 - Git state;
 - last modified commit when tracked;
 - extracted instructions;
+- inbound and outbound instruction references;
 - related language/framework/domain labels;
-- whether the source is authoritative, explicitly trusted, local-only, or supporting.
+- whether the source is authoritative, explicitly trusted, local-only, wrapper, shared canonical, or supporting.
 
-This allows the broker to retrieve only the instruction files that matter for the task.
+This allows the broker to retrieve only the instruction files that matter for the task and preserve reference-aware activation plans.
 
 ## Migration use case
 
@@ -281,10 +357,12 @@ Migration flow:
 ```text
 1. discover existing AGENTS.md / CLAUDE.md / editor rules
 2. classify Git state, path scopes, and trust metadata
-3. index them with path scopes and trust metadata
-4. detect duplicates and conflicts
-5. suggest registry policies for repeated guidance
-6. activate thin local bootstrap files only when explicitly requested
+3. build an instruction reference graph
+4. index them with path scopes and trust metadata
+5. detect duplicates and conflicts
+6. suggest registry policies for repeated guidance
+7. recommend native, shared, wrapper, global, local-only, or CI/comment activation
+8. activate thin local bootstrap files only when explicitly requested
 ```
 
 The project should support gradual migration. Teams should not need to delete existing instruction files on day one. Activation provides a separate, reversible path for replacing instruction files with broker bootstraps.
@@ -333,4 +411,4 @@ The broker can produce expected instruction bundles for historical tasks. These 
 
 ### Policy drift detection
 
-The broker can detect repositories or subdirectories with stale, duplicated, conflicting, ignored, or locally overridden instruction files.
+The broker can detect repositories or subdirectories with stale, duplicated, conflicting, ignored, locally overridden, or reference-broken instruction files.
