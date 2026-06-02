@@ -329,6 +329,11 @@ fn build_instruction_bundle_inner(
                     .unwrap_or(0)
                     .cmp(&left.loaded.policy.priority.unwrap_or(0))
             })
+            // Global policies represent baseline controls and must not be trimmed
+            // after same-priority path/risk policies whose match scores are derived
+            // from caller-supplied task intent. Keep them ahead of scored scoped
+            // policies before applying per-bundle content budgets.
+            .then_with(|| policy_global_rank(right).cmp(&policy_global_rank(left)))
             .then_with(|| right.score.rank.cmp(&left.score.rank))
             .then_with(|| {
                 right
@@ -764,6 +769,10 @@ struct TestCommandCandidate {
 struct MatchScore {
     rank: u32,
     path_specificity: u32,
+}
+
+fn policy_global_rank(matched: &MatchedPolicy<'_>) -> u8 {
+    u8::from(is_global_policy(&matched.loaded.policy.applies_when))
 }
 
 fn resolve_instruction_conflicts(matched: &[MatchedPolicy<'_>]) -> Result<ConflictResolution> {
@@ -2783,6 +2792,73 @@ No task summary provided.
 
         assert_eq!(bundle.instructions[0].text, "Payment domain guidance.");
         assert_eq!(bundle.instructions[1].text, "Broad source guidance.");
+    }
+
+    #[test]
+    fn global_policy_controls_are_budgeted_before_scored_task_matches() {
+        let mut global = test_policy(
+            "zz.global.safety",
+            AppliesWhen::default(),
+            "Always preserve baseline safety guidance.",
+        );
+        global.policy.required_checks = vec!["global.required_check".into()];
+        global.policy.blocked_actions =
+            vec![BlockedAction("GLOBAL BLOCK: baseline action.".into())];
+
+        let mut path_scoped = test_policy(
+            "aa.path.guidance",
+            AppliesWhen {
+                paths: vec!["src/attacker/**".into()],
+                ..AppliesWhen::default()
+            },
+            "Path-scoped ordinary guidance for attacker-controlled path.",
+        );
+        path_scoped.policy.required_checks = vec!["path.optional_check".into()];
+        path_scoped.policy.blocked_actions =
+            vec![BlockedAction("PATH BLOCK: ordinary path action.".into())];
+
+        let bundle = build_instruction_bundle(
+            &test_intent(vec!["src/attacker/payload.rs"]),
+            &[path_scoped, global],
+            BundleBuildOptions {
+                max_tokens: Some(900),
+                max_instructions: Some(1),
+                max_required_checks: Some(1),
+                max_blocked_actions: Some(1),
+            },
+        )
+        .expect("bundle should build");
+
+        assert_eq!(bundle.instructions.len(), 1);
+        assert_eq!(
+            bundle.instructions[0].text,
+            "Always preserve baseline safety guidance."
+        );
+        assert_eq!(
+            bundle
+                .required_checks
+                .iter()
+                .map(|check| check.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["global.required_check"]
+        );
+        assert_eq!(
+            bundle
+                .blocked_actions
+                .iter()
+                .map(|action| action.0.as_str())
+                .collect::<Vec<_>>(),
+            vec!["GLOBAL BLOCK: baseline action."]
+        );
+        assert_eq!(
+            bundle
+                .sources
+                .iter()
+                .map(|source| source.0.as_str())
+                .collect::<Vec<_>>(),
+            vec!["zz.global.safety@1"]
+        );
+        assert_eq!(bundle.context_budget.candidate_policies_omitted, Some(1));
     }
 
     #[test]
