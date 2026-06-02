@@ -1654,6 +1654,30 @@ instructions:
     }
 
     #[test]
+    fn inspect_conflict_detection_is_bounded_for_untrusted_candidates() {
+        let candidates = (0..600)
+            .map(|index| {
+                let package_manager = if index % 2 == 0 { "npm" } else { "pnpm" };
+                test_inspection_candidate(
+                    &format!("Use {package_manager} for package commands."),
+                    "AGENTS.md",
+                    index + 1,
+                    ".",
+                    "package_manager",
+                    MigrationClass::RepoPolicy,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let conflicts = detect_inspection_conflicts(&candidates);
+
+        assert_eq!(conflicts.len(), 256);
+        assert!(conflicts
+            .iter()
+            .all(|conflict| conflict.topic == "package_manager"));
+    }
+
+    #[test]
     fn markdown_candidates_are_added_to_get_bundle_with_provenance() {
         let repo = fixture_repo("nested-instructions");
         let discovered = discover(&repo).expect("discover fixture repo");
