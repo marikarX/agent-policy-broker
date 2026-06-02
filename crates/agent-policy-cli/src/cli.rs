@@ -235,9 +235,7 @@ mod tests {
         Commands, GlobalArgs, IndexManifest, InspectionCandidate, InstructionDiscoveryMode,
         MigrationClass, OutputFormat, RegistryCommands, RegistrySyncStatus, ValidationStatus,
     };
-    use agent_policy_config::{
-        load_config, AgentPolicyConfig, RegistryConfig, RegistrySyncConfig, SyncMode,
-    };
+    use agent_policy_config::{AgentPolicyConfig, RegistryConfig, RegistrySyncConfig, SyncMode};
     use agent_policy_core::{
         build_instruction_bundle, build_instruction_bundle_with_bm25_candidates,
         load_policies_from_dirs, render_bundle_json, BundleBuildOptions, DetectedContext,
