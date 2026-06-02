@@ -35,6 +35,29 @@ Current exit behavior:
 
 More granular exit codes are planned, but are not implemented in the MVP.
 
+## Command mutability
+
+Read-only commands must not modify instruction files:
+
+```text
+agent-policy get
+agent-policy discover
+agent-policy inspect
+agent-policy validate
+agent-policy index
+agent-policy migrate --dry-run
+agent-policy activate ... --dry-run
+agent-policy deactivate ... --dry-run
+```
+
+Mutating commands must require an explicit write or restore flag:
+
+```text
+agent-policy migrate --write
+agent-policy activate ... --write
+agent-policy deactivate ... --restore
+```
+
 ## `agent-policy get`
 
 Compile a task-specific instruction bundle.
@@ -98,6 +121,15 @@ CLAUDE.md
 
 Codex-compatible mode follows Codex `AGENTS.md` semantics: `AGENTS.override.md` wins over `AGENTS.md`, fallback filenames are used only when both are absent, one file is active per directory, and only the project-root-to-current-directory chain is active. Optional global instructions come from `codex.home` or `CODEX_HOME` when `codex.include_global` is enabled. Empty files are skipped, and max-byte truncation or omissions are reported in JSON metadata.
 
+Discovery should also classify instruction files by Git state when the repository is available:
+
+```text
+tracked      committed shared repo source
+untracked    local or draft source
+ignored      local-only source
+missing      absent source
+```
+
 ## `agent-policy inspect`
 
 Inspect an existing repository and produce an audit report.
@@ -116,6 +148,7 @@ The report should include:
 
 - discovered instruction files;
 - path scopes;
+- Git state for instruction files;
 - duplicated guidance;
 - conflicts;
 - migration candidates;
@@ -138,9 +171,119 @@ Write proposed drafts:
 agent-policy migrate --repo . --write
 ```
 
-Migration must be conservative. It should not delete or rewrite existing instruction files unless a future explicit flag is added for that behavior.
+Migration must be conservative. It should not delete or rewrite existing instruction files unless a future explicit activation or cleanup flag is used for that behavior.
 
 Generated policies should default to `status: draft`.
+
+## `agent-policy activate`
+
+Activate broker-managed instruction delivery by archiving existing instruction files, importing or migrating useful guidance, and replacing the active instruction file with a small bootstrap.
+
+Activation is planned, not part of the early MVP command set unless implemented by the current binary.
+
+Repo activation dry run:
+
+```bash
+agent-policy activate repo --repo . --dry-run
+```
+
+Repo activation write:
+
+```bash
+agent-policy activate repo --repo . --write
+```
+
+Global Codex activation dry run:
+
+```bash
+agent-policy activate codex --global --dry-run
+```
+
+Global Codex activation write:
+
+```bash
+agent-policy activate codex --global --write
+```
+
+Planned flags:
+
+```text
+--dry-run                  Print the activation plan without writing files.
+--write                    Apply the activation plan.
+--global                   Activate global agent instructions such as Codex home instructions.
+--archive-existing         Archive existing instruction files before replacement.
+--local                    Create a local-only ignored bootstrap when repo AGENTS.md is ignored.
+--force-track-bootstrap    Force-add a tracked repo bootstrap even when AGENTS.md is ignored.
+--smoke-test               Run a lookup smoke test after activation.
+```
+
+Activation should:
+
+- discover existing instruction sources;
+- classify each source by path scope, trust, and Git state;
+- archive files before replacing them;
+- write an activation manifest;
+- generate or update broker-managed policy drafts when requested;
+- replace active instruction files with a small broker bootstrap;
+- validate and index the resulting configuration;
+- print a restore command.
+
+If repo `AGENTS.md` is ignored, repo activation must not silently create a local-only bootstrap. It should require `--local`, `--force-track-bootstrap`, or use global activation.
+
+See [Activation lifecycle](activation-lifecycle.md).
+
+## `agent-policy deactivate`
+
+Deactivate broker-managed instruction delivery and restore archived instruction files.
+
+Deactivation is planned, not part of the early MVP command set unless implemented by the current binary.
+
+Repo deactivation dry run:
+
+```bash
+agent-policy deactivate repo --repo . --dry-run
+```
+
+Repo restore:
+
+```bash
+agent-policy deactivate repo --repo . --restore
+```
+
+Restore a specific activation:
+
+```bash
+agent-policy deactivate repo --repo . --activation act_2026_06_01_223000 --restore
+```
+
+Global Codex deactivation:
+
+```bash
+agent-policy deactivate codex --global --dry-run
+agent-policy deactivate codex --global --restore
+```
+
+Planned flags:
+
+```text
+--dry-run                    Print the restore plan without writing files.
+--restore                    Restore archived instruction files.
+--activation <id>            Restore a specific activation archive.
+--force                      Overwrite files changed after activation.
+--remove-generated-policies  Remove broker-generated policy drafts.
+--remove-index               Remove local derived indexes.
+```
+
+Deactivation should:
+
+- find the activation manifest;
+- verify current files still match broker-managed bootstrap state where possible;
+- restore archived files to their original paths;
+- remove broker-created bootstrap files when safe;
+- leave generated policies and indexes in place unless explicit cleanup flags are supplied;
+- refuse to overwrite changed files unless `--force` is supplied.
+
+See [Activation lifecycle](activation-lifecycle.md).
 
 ## `agent-policy validate`
 
@@ -159,7 +302,8 @@ Validation should check:
 - vague instructions;
 - conflicts;
 - missing owners for high-priority policies;
-- output budget risks.
+- output budget risks;
+- activation archive manifest shape when present.
 
 ## `agent-policy index`
 
@@ -177,7 +321,7 @@ fulltext/
 manifest.json
 ```
 
-`metadata.sqlite` and `fulltext/` are derived index artifacts under the local cache directory. They accelerate lookup but are rebuildable from local policies, a configured cached registry, and configured `index.include` documentation paths.
+`metadata.sqlite` and `fulltext/` are derived index artifacts under the local cache directory. They accelerate lookup but are rebuildable from local policies, a configured cached registry, archived instructions, and configured `index.include` documentation paths.
 
 ## `agent-policy registry sync`
 
