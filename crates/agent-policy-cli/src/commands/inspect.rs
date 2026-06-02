@@ -196,32 +196,69 @@ fn inspection_source(source: &InstructionSource) -> InspectionSource {
 }
 
 fn inspection_candidates(discovered: &DiscoveryResult) -> Vec<InspectionCandidate> {
-    discovered
-        .instruction_sources
-        .iter()
-        .flat_map(|source| {
-            source.candidates.iter().map(|candidate| {
-                let topic = candidate_topic(candidate).to_string();
-                let (migration_class, target_policy) =
-                    classify_candidate_migration(candidate, &topic);
-                InspectionCandidate {
-                    text: bounded_instruction_text(&candidate.text),
-                    source: candidate.provenance.path.clone(),
-                    line: candidate.line,
-                    scope: candidate.provenance.scope.clone(),
-                    candidate_type: match candidate.candidate_type {
-                        MarkdownInstructionCandidateType::Instruction => "instruction",
-                        MarkdownInstructionCandidateType::RequiredCheck => "required_check",
-                    }
-                    .to_string(),
-                    topic,
-                    migration_class,
-                    target_policy,
+    let mut selected = Vec::with_capacity(MAX_INSPECTION_CANDIDATES);
+    let mut index = 0;
+    for source in &discovered.instruction_sources {
+        for candidate in &source.candidates {
+            if is_safety_priority_topic(candidate_topic(candidate)) {
+                selected.push((index, candidate));
+                if selected.len() >= MAX_INSPECTION_CANDIDATES {
+                    break;
                 }
-            })
-        })
-        .take(MAX_INSPECTION_CANDIDATES)
+            }
+            index += 1;
+        }
+        if selected.len() >= MAX_INSPECTION_CANDIDATES {
+            break;
+        }
+    }
+
+    if selected.len() < MAX_INSPECTION_CANDIDATES {
+        index = 0;
+        for source in &discovered.instruction_sources {
+            for candidate in &source.candidates {
+                if !is_safety_priority_topic(candidate_topic(candidate)) {
+                    selected.push((index, candidate));
+                    if selected.len() >= MAX_INSPECTION_CANDIDATES {
+                        break;
+                    }
+                }
+                index += 1;
+            }
+            if selected.len() >= MAX_INSPECTION_CANDIDATES {
+                break;
+            }
+        }
+    }
+
+    selected.sort_by_key(|(index, _)| *index);
+    selected
+        .into_iter()
+        .map(|(_, candidate)| inspection_candidate(candidate))
         .collect()
+}
+
+fn inspection_candidate(candidate: &MarkdownInstructionCandidate) -> InspectionCandidate {
+    let topic = candidate_topic(candidate).to_string();
+    let (migration_class, target_policy) = classify_candidate_migration(candidate, &topic);
+    InspectionCandidate {
+        text: bounded_instruction_text(&candidate.text),
+        source: candidate.provenance.path.clone(),
+        line: candidate.line,
+        scope: candidate.provenance.scope.clone(),
+        candidate_type: match candidate.candidate_type {
+            MarkdownInstructionCandidateType::Instruction => "instruction",
+            MarkdownInstructionCandidateType::RequiredCheck => "required_check",
+        }
+        .to_string(),
+        topic,
+        migration_class,
+        target_policy,
+    }
+}
+
+fn is_safety_priority_topic(topic: &str) -> bool {
+    matches!(topic, "generated_files" | "secrets" | "security")
 }
 
 fn bounded_instruction_text(text: &str) -> String {
@@ -282,9 +319,9 @@ pub(crate) fn detect_inspection_conflicts(
     candidates: &[InspectionCandidate],
 ) -> Vec<InspectionConflict> {
     let mut conflicts = Vec::new();
-    detect_package_manager_conflicts(candidates, &mut conflicts);
-    detect_generated_file_conflicts(candidates, &mut conflicts);
     detect_secret_conflicts(candidates, &mut conflicts);
+    detect_generated_file_conflicts(candidates, &mut conflicts);
+    detect_package_manager_conflicts(candidates, &mut conflicts);
     conflicts
 }
 
