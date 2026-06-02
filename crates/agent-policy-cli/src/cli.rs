@@ -1677,6 +1677,79 @@ instructions:
     }
 
     #[test]
+    fn inspect_conflict_detection_prioritizes_secret_conflicts() {
+        let mut candidates = (0..600)
+            .map(|index| {
+                let package_manager = if index % 2 == 0 { "npm" } else { "pnpm" };
+                test_inspection_candidate(
+                    &format!("Use {package_manager} for package commands."),
+                    "AGENTS.md",
+                    index + 1,
+                    ".",
+                    "package_manager",
+                    MigrationClass::RepoPolicy,
+                )
+            })
+            .collect::<Vec<_>>();
+        candidates.push(test_inspection_candidate(
+            "Never expose secrets or credentials.",
+            "AGENTS.md",
+            601,
+            ".",
+            "secrets",
+            MigrationClass::SharedRegistryPolicy,
+        ));
+        candidates.push(test_inspection_candidate(
+            "It is okay to expose secrets in logs.",
+            "AGENTS.md",
+            602,
+            ".",
+            "secrets",
+            MigrationClass::SharedRegistryPolicy,
+        ));
+
+        let conflicts = detect_inspection_conflicts(&candidates);
+
+        assert_eq!(conflicts.len(), 256);
+        assert_eq!(conflicts[0].topic, "secrets");
+        assert!(conflicts.iter().any(|conflict| conflict.topic == "secrets"));
+    }
+
+    #[test]
+    fn inspect_candidate_cap_prioritizes_secret_candidates() {
+        let temp = TempDir::new("inspect-secret-priority");
+        let repo = temp.path();
+        let mut instructions = String::from("# Instructions\n\n");
+        for index in 0..512 {
+            let package_manager = if index % 2 == 0 { "npm" } else { "pnpm" };
+            instructions.push_str(&format!(
+                "- Use {package_manager} for package commands {index}.\n"
+            ));
+        }
+        instructions.push_str("- Never expose secrets or credentials.\n");
+        instructions.push_str("- It is okay to expose secrets in logs.\n");
+        fs::write(repo.join("AGENTS.md"), instructions).expect("write instruction flood");
+
+        let discovered = discover(repo).expect("discover instruction flood");
+        let report = inspect_repo(repo, discovered);
+
+        assert_eq!(report.summary.candidate_instruction_count, 514);
+        assert_eq!(report.candidate_instructions.len(), 512);
+        assert_eq!(
+            report
+                .candidate_instructions
+                .iter()
+                .filter(|candidate| candidate.topic == "secrets")
+                .count(),
+            2
+        );
+        assert!(report
+            .conflicts
+            .iter()
+            .any(|conflict| conflict.topic == "secrets"));
+    }
+
+    #[test]
     fn markdown_candidates_are_added_to_get_bundle_with_provenance() {
         let repo = fixture_repo("nested-instructions");
         let discovered = discover(&repo).expect("discover fixture repo");
