@@ -1,5 +1,8 @@
 use std::collections::BTreeSet;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -130,7 +133,7 @@ pub(crate) fn build_metadata_index_with_cache_dir(
         .as_ref()
         .is_some_and(|manifest| index_manifest_is_stale(manifest, &source));
 
-    fs::create_dir_all(&index_dir)?;
+    create_private_dir_all(&index_dir)?;
     write_metadata_sqlite(&metadata_path, &policies, source.commit.as_deref())?;
     let fulltext_document_count = write_fulltext_index(
         &fulltext_path,
@@ -141,7 +144,7 @@ pub(crate) fn build_metadata_index_with_cache_dir(
     )?;
     let manifest = index_manifest(&source)?;
     let manifest_json = serde_json::to_string_pretty(&manifest)?;
-    fs::write(&manifest_path, format!("{manifest_json}\n"))?;
+    write_private_file(&manifest_path, format!("{manifest_json}\n").as_bytes())?;
 
     Ok(IndexBuildReport {
         source,
@@ -347,6 +350,60 @@ fn read_indexed_policy_ids(path: &Path) -> anyhow::Result<BTreeSet<String>> {
         .map_err(anyhow::Error::from)
 }
 
+fn create_private_dir_all(path: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(path).with_context(|| format!("failed to create {}", path.display()))?;
+    secure_existing_path(path)
+}
+
+fn create_private_file(path: &Path) -> anyhow::Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options
+        .open(path)
+        .with_context(|| format!("failed to create {}", path.display()))?;
+    secure_existing_path(path)
+}
+
+fn write_private_file(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    file.write_all(contents)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    secure_existing_path(path)
+}
+
+#[cfg(unix)]
+fn secure_existing_path(path: &Path) -> anyhow::Result<()> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
+    let mode = if metadata.is_dir() { 0o700 } else { 0o600 };
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .with_context(|| format!("failed to set permissions on {}", path.display()))?;
+
+    if metadata.is_dir() {
+        for entry in fs::read_dir(path)
+            .with_context(|| format!("failed to read directory {}", path.display()))?
+        {
+            let entry = entry?;
+            secure_existing_path(&entry.path())?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn secure_existing_path(_path: &Path) -> anyhow::Result<()> {
+    Ok(())
+}
+
 fn index_manifest(source: &IndexSource) -> anyhow::Result<IndexManifest> {
     Ok(IndexManifest {
         schema_version: INDEX_SCHEMA_VERSION,
@@ -376,7 +433,7 @@ fn write_fulltext_index(
     if path.exists() {
         fs::remove_dir_all(path)?;
     }
-    fs::create_dir_all(path)?;
+    create_private_dir_all(path)?;
 
     let (schema, fields) = fulltext_schema();
     let index = Index::create_in_dir(path, schema)?;
@@ -444,6 +501,7 @@ fn write_fulltext_index(
     }
 
     writer.commit()?;
+    secure_existing_path(path)?;
     Ok(count)
 }
 
@@ -623,6 +681,7 @@ fn write_metadata_sqlite(
     if path.exists() {
         fs::remove_file(path)?;
     }
+    create_private_file(path)?;
     let mut connection = Connection::open(path)?;
     connection.execute_batch(
         "

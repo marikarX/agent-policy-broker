@@ -248,6 +248,8 @@ mod tests {
     use rusqlite::Connection;
     use std::collections::BTreeMap;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -674,6 +676,14 @@ instructions:
         assert_eq!(manifest.indexes.fulltext, "fulltext");
         assert!(report.fulltext_path.exists());
         assert!(report.fulltext_document_count >= 1);
+
+        #[cfg(unix)]
+        {
+            assert_eq!(path_mode(&report.index_dir), 0o700);
+            assert_eq!(path_mode(&report.metadata_path), 0o600);
+            assert_eq!(path_mode(&report.manifest_path), 0o600);
+            assert_eq!(path_mode(&report.fulltext_path), 0o700);
+        }
 
         let connection = Connection::open(&report.metadata_path).expect("open metadata sqlite");
         let row = connection
@@ -1759,6 +1769,15 @@ instructions:
         )
         .expect("build bundle");
         render_bundle_json(&bundle).expect("render bundle json")
+    }
+
+    #[cfg(unix)]
+    fn path_mode(path: &Path) -> u32 {
+        fs::metadata(path)
+            .unwrap_or_else(|error| panic!("read metadata for {}: {error}", path.display()))
+            .permissions()
+            .mode()
+            & 0o777
     }
 
     fn fixture_repo(name: &str) -> PathBuf {
