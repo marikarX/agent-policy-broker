@@ -11,6 +11,10 @@ use crate::commands::discover::codex_options;
 use crate::commands::get::normalize_scope_prefix;
 use crate::render::{instruction_source_type_name, json_escape, push_unique};
 
+const MAX_INSPECTION_CANDIDATES: usize = 512;
+const MAX_INSPECTION_CONFLICTS: usize = 256;
+const MAX_INSPECTION_TEXT_BYTES: usize = 4096;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InspectionReport {
     pub(crate) repo: String,
@@ -143,6 +147,11 @@ pub(crate) fn inspect_repo(repo: &Path, discovered: DiscoveryResult) -> Inspecti
         .and_then(|name| name.to_str())
         .unwrap_or(".")
         .to_string();
+    let discovered_candidate_count = discovered
+        .instruction_sources
+        .iter()
+        .map(|source| source.candidates.len())
+        .sum();
     let candidate_instructions = inspection_candidates(&discovered);
     let instruction_sources = discovered
         .instruction_sources
@@ -157,7 +166,7 @@ pub(crate) fn inspect_repo(repo: &Path, discovered: DiscoveryResult) -> Inspecti
         repo: repo_name,
         summary: InspectionSummary {
             source_count: instruction_sources.len(),
-            candidate_instruction_count: candidate_instructions.len(),
+            candidate_instruction_count: discovered_candidate_count,
             duplicate_count: duplicates.len(),
             conflict_count: conflicts.len(),
             migration_candidate_count: migration_candidates.len(),
@@ -196,7 +205,7 @@ fn inspection_candidates(discovered: &DiscoveryResult) -> Vec<InspectionCandidat
                 let (migration_class, target_policy) =
                     classify_candidate_migration(candidate, &topic);
                 InspectionCandidate {
-                    text: candidate.text.clone(),
+                    text: bounded_instruction_text(&candidate.text),
                     source: candidate.provenance.path.clone(),
                     line: candidate.line,
                     scope: candidate.provenance.scope.clone(),
@@ -211,7 +220,20 @@ fn inspection_candidates(discovered: &DiscoveryResult) -> Vec<InspectionCandidat
                 }
             })
         })
+        .take(MAX_INSPECTION_CANDIDATES)
         .collect()
+}
+
+fn bounded_instruction_text(text: &str) -> String {
+    if text.len() <= MAX_INSPECTION_TEXT_BYTES {
+        return text.to_string();
+    }
+
+    let mut end = MAX_INSPECTION_TEXT_BYTES;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}… [truncated]", &text[..end])
 }
 
 pub(crate) fn detect_inspection_duplicates(
@@ -282,14 +304,10 @@ fn detect_package_manager_conflicts(
             if left_pm == right_pm {
                 continue;
             }
-            if conflicts.iter().any(|conflict| {
-                conflict.topic == "package_manager"
-                    && conflict.sources.contains(&source_line_ref(left))
-                    && conflict.sources.contains(&source_line_ref(right))
-            }) {
-                continue;
-            }
             let winner = more_specific_candidate(left, right);
+            if conflicts.len() >= MAX_INSPECTION_CONFLICTS {
+                return;
+            }
             conflicts.push(InspectionConflict {
                 topic: "package_manager".to_string(),
                 sources: vec![source_line_ref(left), source_line_ref(right)],
@@ -322,6 +340,9 @@ fn detect_generated_file_conflicts(
 
     for prohibit in &prohibits {
         for allow in &allows {
+            if conflicts.len() >= MAX_INSPECTION_CONFLICTS {
+                return;
+            }
             conflicts.push(InspectionConflict {
                 topic: "generated_files".to_string(),
                 sources: vec![source_line_ref(prohibit), source_line_ref(allow)],
@@ -350,6 +371,9 @@ fn detect_secret_conflicts(
 
     for prohibit in &prohibits {
         for allow in &allows {
+            if conflicts.len() >= MAX_INSPECTION_CONFLICTS {
+                return;
+            }
             conflicts.push(InspectionConflict {
                 topic: "secrets".to_string(),
                 sources: vec![source_line_ref(prohibit), source_line_ref(allow)],
