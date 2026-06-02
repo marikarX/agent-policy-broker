@@ -8,11 +8,12 @@ This demo is a copy-paste runnable walkthrough of Agent Policy Broker from the r
 DEMO_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/agent-policy-demo.XXXXXX")"
 export XDG_CACHE_HOME="$DEMO_ROOT/cache"
 export CARGO_TARGET_DIR="$DEMO_ROOT/target"
-export APB="cargo run -q -p agent-policy-cli --"
+export CARGO_NET_OFFLINE=true
+export APB="cargo run --offline --locked -q -p agent-policy-cli --"
 printf 'Demo temp directory: %s\n' "$DEMO_ROOT"
 ```
 
-What this demonstrates: the demo keeps Agent Policy Broker indexes under `XDG_CACHE_HOME` and Cargo build output under a temp target directory. It does not require network access or private repositories.
+What this demonstrates: the demo keeps Agent Policy Broker indexes under `XDG_CACHE_HOME` and Cargo build output under a temp target directory. It does not require network access or private repositories. Cargo is forced into offline, locked mode, so run `cargo fetch --locked` intentionally beforehand if your Cargo cache does not already contain the locked dependencies.
 
 ## 1. Validate a Repository
 
@@ -109,4 +110,4 @@ The default scripted demo runs steps 1 through 7 and skips the optional service 
 bash scripts/demo.sh
 ```
 
-What this demonstrates: the main public demo path can be smoke-tested as one safe command. It creates a temp directory, sets `XDG_CACHE_HOME`, runs offline, and does not mutate committed files.
+What this demonstrates: the main public demo path can be smoke-tested as one safe command. It creates a temp directory, sets `XDG_CACHE_HOME`, forces Cargo offline mode, and does not mutate committed files.
