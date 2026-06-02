@@ -2,7 +2,7 @@
 
 Agent Policy Broker should help teams inspect existing repositories, understand current agent instructions, and migrate repeated guidance into the broker over time.
 
-The goal is not to force a big-bang migration. The broker should support gradual adoption.
+The goal is not to force a big-bang migration. The broker should support gradual adoption, and replacing active instruction files should happen only through the explicit activation lifecycle. See [Activation lifecycle](activation-lifecycle.md).
 
 ## Problem
 
@@ -30,7 +30,7 @@ These files may contain useful project knowledge, but they often become:
 - hard to share across repositories;
 - overloaded with context that is irrelevant to many tasks.
 
-Agent Policy Broker should inspect these files, preserve useful path-scoped guidance, and help teams move repeated or shared guidance into a registry.
+Agent Policy Broker should inspect these files, preserve useful path-scoped guidance, and help teams move repeated or shared guidance into broker-managed policies or supporting knowledge.
 
 ## Inspection command
 
@@ -64,14 +64,18 @@ Inspection should:
 
 1. discover root and nested instruction files;
 2. infer directory scopes;
-3. extract candidate instructions;
-4. classify instructions by topic;
-5. detect duplicates;
-6. detect conflicts;
-7. identify stale or overly broad guidance;
-8. identify instructions that should stay local;
-9. identify instructions that should move to shared registry policies;
-10. propose a migration plan.
+3. classify instruction files by Git state: tracked, untracked, ignored, or missing;
+4. extract candidate instructions;
+5. classify instructions by topic;
+6. detect duplicates;
+7. detect conflicts;
+8. identify stale or overly broad guidance;
+9. identify instructions that should stay local;
+10. identify instructions that should move to repo or registry policies;
+11. identify content that should become supporting knowledge;
+12. propose a migration and activation plan.
+
+Inspection is read-only.
 
 ## Instruction source discovery
 
@@ -82,6 +86,7 @@ Codex-compatible mode follows the active Codex project chain instead: project ro
 Supported sources include:
 
 ```text
+AGENTS.override.md
 AGENTS.md
 CLAUDE.md
 .github/copilot-instructions.md
@@ -95,7 +100,8 @@ The scanner should record:
 - file path;
 - directory scope;
 - source type;
-- last modified commit;
+- Git state;
+- last modified commit when tracked;
 - owner if known through CODEOWNERS;
 - extracted instruction count;
 - detected language/framework/domain labels.
@@ -110,12 +116,14 @@ The scanner should record:
       "path": "AGENTS.md",
       "scope": ".",
       "type": "agents_md",
+      "git_state": "tracked",
       "instruction_count": 12
     },
     {
       "path": "backend/payments/AGENTS.md",
       "scope": "backend/payments/**",
       "type": "agents_md",
+      "git_state": "tracked",
       "instruction_count": 9
     }
   ],
@@ -149,7 +157,12 @@ The scanner should record:
         "Add tests for provider retry behavior."
       ]
     }
-  ]
+  ],
+  "activation_recommendation": {
+    "mode": "repo",
+    "requires_archive": true,
+    "ignored_bootstrap_warning": false
+  }
 }
 ```
 
@@ -176,7 +189,7 @@ To write proposed files locally:
 agent-policy migrate --repo . --write
 ```
 
-Migration should create proposed policy files for review. It should not delete or rewrite existing instruction files unless explicitly requested.
+Migration should create proposed policy files for review. It should not delete or rewrite existing instruction files. Replacing instruction files belongs to `agent-policy activate ... --write`.
 
 ## Migration targets
 
@@ -258,9 +271,30 @@ metadata:
 
 Generated policies should start as `status: draft` so humans can review and approve them before they become active.
 
+## Activation after migration
+
+After inspection and migration, users may activate broker-managed instruction delivery.
+
+Planned commands:
+
+```bash
+agent-policy activate repo --repo . --dry-run
+agent-policy activate repo --repo . --write
+```
+
+Activation should:
+
+1. archive instruction files that will be replaced;
+2. write an activation manifest;
+3. replace active instruction files with a small broker bootstrap;
+4. validate and index the resulting state;
+5. print a restore command.
+
+Activation should not proceed silently when a repo `AGENTS.md` is ignored by Git. It should require an explicit choice such as local-only activation, force-tracked bootstrap, or global Codex activation.
+
 ## Bootstrap reduction
 
-After migration, an existing instruction file can be reduced to a thin bootstrap.
+After migration and activation, an existing instruction file can be reduced to a thin bootstrap.
 
 Before:
 
@@ -286,18 +320,36 @@ agent-policy get --repo . --task "$USER_TASK" --files <relevant-files>
 Follow the returned bundle. Keep local notes here only when they are specific to this directory and not represented in the policy registry.
 ```
 
+## Deactivation and restore
+
+Activation must be reversible.
+
+Planned commands:
+
+```bash
+agent-policy deactivate repo --repo . --dry-run
+agent-policy deactivate repo --repo . --restore
+agent-policy deactivate repo --repo . --activation <activation-id> --restore
+```
+
+Deactivation should restore archived instruction files to their previous paths, remove broker-created bootstrap files when safe, and refuse to overwrite files that changed after activation unless `--force` is supplied.
+
+Generated policy drafts and indexes should be left in place unless explicit cleanup flags are supplied.
+
 ## Audit report
 
 The inspection report should help teams answer:
 
 - Which instruction files exist?
 - Which paths do they apply to?
+- Are they tracked, ignored, untracked, or local-only?
 - Which instructions are duplicated?
 - Which instructions conflict?
 - Which files are stale?
 - Which instructions should move to shared policy?
 - Which instructions should remain local?
 - Which instructions are too verbose and should become supporting knowledge?
+- Which activation path is safest?
 
 ## Safety requirements
 
@@ -307,6 +359,7 @@ The tool should not:
 
 - delete existing instruction files by default;
 - rewrite files without explicit `--write` or equivalent confirmation;
+- replace active instruction files outside activation;
 - mark generated policies as active automatically;
 - upload private repository instructions to a remote service unless explicitly configured;
 - index source code by default.
@@ -320,8 +373,13 @@ Recommended adoption path:
 2. review generated report
 3. agent-policy migrate --repo . --dry-run
 4. review proposed draft policies
-5. move approved shared policies to registry repo
-6. reduce local instruction files to bootstrap guidance
-7. run agent-policy validate
-8. enable PR checks for policy drift and conflicts
+5. approve or edit generated policies
+6. agent-policy activate repo --repo . --dry-run
+7. review archive and bootstrap plan
+8. agent-policy activate repo --repo . --write
+9. run agent-policy validate
+10. run agent-policy index
+11. enable PR checks for policy drift and conflicts
 ```
+
+For users who prefer global Codex activation or whose repos ignore `AGENTS.md`, use `agent-policy activate codex --global --dry-run` instead of repo activation.

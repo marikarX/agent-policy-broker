@@ -4,34 +4,135 @@ Agent Policy Broker should integrate with coding agents through the simplest pos
 
 MCP support may be useful later, but it should not be required for the open-source core.
 
-## Basic pattern
+## Integration modes
+
+There are two integration styles:
+
+1. **Manual bootstrap**: a user or repository maintainer adds a small instruction file that tells the agent to run `agent-policy get` before editing code.
+2. **Broker activation**: `agent-policy activate` archives existing instruction files, imports or migrates useful guidance, and replaces the active instruction file with a small broker bootstrap.
+
+Lookup commands do not mutate instruction files. Activation and deactivation are explicit lifecycle operations. See [Activation lifecycle](activation-lifecycle.md).
+
+## Basic runtime pattern
 
 ```text
-1. Add a small bootstrap instruction file to the repository.
-2. Tell the coding agent to run `agent-policy get` before editing code.
+1. The coding agent reads a bootstrap instruction file.
+2. The bootstrap tells the agent to classify the task and run `agent-policy get` before editing code.
 3. The command prints task-specific instructions.
 4. The agent follows those instructions.
+5. The agent reports the policy version and checks run.
 ```
 
-## Codex / AGENTS.md
+## Bootstrap guidance
 
-Example `AGENTS.md`:
+A useful bootstrap should ask the agent to classify the user task as one of:
 
-```md
+```text
+fix_bug
+add_feature
+refactor
+test
+docs
+```
+
+It should include relevant files whenever they are known, and risk flags only when obvious.
+
+Example:
+
+````md
 # Agent instructions
 
-Before changing code, run:
+Before changing code, classify the user task as one of:
+
+- `fix_bug` — fix incorrect behavior, typo, broken build, failing test, or regression
+- `add_feature` — add new user-visible or API behavior
+- `refactor` — restructure code without intended behavior change
+- `test` — add or update tests only
+- `docs` — documentation-only change
+
+Then request task-specific policy guidance:
 
 ```bash
-agent-policy get --repo . --task "$USER_TASK"
+agent-policy get --repo . --task "$USER_TASK" --type "<task_type>"
 ```
 
-If relevant files are known, include them with `--files`.
+If relevant files are known, include them:
 
-Follow the returned instructions unless they conflict with higher-priority system or developer instructions; direct user task instructions must not weaken mandatory global safety controls returned by the broker.
-
-If the command fails, follow the fallback rules in this file and report that policy lookup was unavailable.
+```bash
+agent-policy get \
+  --repo . \
+  --task "$USER_TASK" \
+  --type "<task_type>" \
+  --files path/to/file1 path/to/file2
 ```
+
+If risk is obvious, include one or more risk flags:
+
+```bash
+agent-policy get \
+  --repo . \
+  --task "$USER_TASK" \
+  --type "<task_type>" \
+  --files path/to/file1 \
+  --risk auth public_api migrations secrets
+```
+
+Use only applicable risk flags. Do not invent risk flags just to fill the argument.
+
+Follow the returned instruction bundle. If lookup fails, make the smallest safe change, inspect nearby code and tests, avoid risky areas unless explicitly requested, and report that policy lookup was unavailable.
+
+In the final response, mention the policy version used and checks run.
+````
+
+## Global Codex activation
+
+Global Codex activation is useful when users want Codex to ask the broker for instructions across repositories, or when many repositories ignore or do not commit `AGENTS.md`.
+
+Planned commands:
+
+```bash
+agent-policy activate codex --global --dry-run
+agent-policy activate codex --global --write
+```
+
+Global activation should inspect active Codex instruction files such as `AGENTS.override.md` and `AGENTS.md` under the configured Codex home, archive the original files, import reusable guidance into broker-managed global policy or supporting knowledge, and replace the active global instruction file with a small broker bootstrap.
+
+Rollback should be available through:
+
+```bash
+agent-policy deactivate codex --global --dry-run
+agent-policy deactivate codex --global --restore
+```
+
+## Repo activation
+
+Repo activation is useful when a repository should carry its own broker bootstrap and policy files.
+
+Planned commands:
+
+```bash
+agent-policy activate repo --repo . --dry-run
+agent-policy activate repo --repo . --write
+```
+
+Repo activation should inspect tracked repo instruction files, generate or update policy drafts when requested, archive originals, and replace active repo instruction files with a broker bootstrap.
+
+If `AGENTS.md` is ignored by Git, repo activation must not silently create a local-only bootstrap. It should require one of:
+
+```text
+--local                   create a local ignored bootstrap
+--force-track-bootstrap   create and force-add a tracked bootstrap
+--global                  use global Codex activation instead
+```
+
+Rollback should be available through:
+
+```bash
+agent-policy deactivate repo --repo . --dry-run
+agent-policy deactivate repo --repo . --restore
+```
+
+## Codex-compatible discovery
 
 For Codex-compatible discovery, configure the broker and call:
 
@@ -56,6 +157,8 @@ agent-policy get --repo . --task "$USER_TASK"
 
 Apply the returned instruction bundle for the current task.
 ```
+
+Claude integrations can use manual bootstrap first. A future activation flow may support archiving and replacing `CLAUDE.md` with a broker bootstrap in the same reversible way as repo activation.
 
 ## Cursor rules
 

@@ -12,6 +12,7 @@ This roadmap is intentionally small and implementation-oriented.
 - Document context budgeting and retrieval strategy
 - Document nested instruction discovery and layered guidance
 - Document implementation stack decision
+- Document activation and rollback lifecycle
 
 ## Phase 1: Rust workspace and local CLI core
 
@@ -39,6 +40,8 @@ Explicitly defer from Phase 1:
 - `agent-policy serve`;
 - `agent-policy inspect`;
 - `agent-policy migrate`;
+- `agent-policy activate`;
+- `agent-policy deactivate`;
 - network registry fetch or clone.
 
 ## Phase 2: Policy and instruction validation
@@ -65,6 +68,7 @@ Planned capabilities:
 - read CODEOWNERS;
 - map files to likely language/framework/domain;
 - map nested instruction files to directory scopes;
+- classify instruction files by Git state: tracked, untracked, ignored, or missing;
 - support generated-file and sensitive-path configuration.
 
 ## Phase 4: Repository inspection and migration reports
@@ -83,7 +87,32 @@ Planned capabilities:
 - keep generated policies as `status: draft`;
 - avoid modifying existing instruction files by default.
 
-## Phase 5: Local retrieval index
+## Phase 5: Activation and rollback lifecycle
+
+Goal: let users explicitly convert existing agent instruction files into broker-managed instruction delivery without losing the ability to restore the previous state.
+
+Planned capabilities:
+
+- `agent-policy activate repo --repo . --dry-run`;
+- `agent-policy activate repo --repo . --write`;
+- `agent-policy activate codex --global --dry-run`;
+- `agent-policy activate codex --global --write`;
+- archive existing instruction files before replacing them;
+- write an activation manifest with original paths, Git state, file hashes, created files, and restore command;
+- replace active instruction files with a small broker bootstrap;
+- distinguish tracked, untracked, ignored, and local-only instruction files;
+- warn or require explicit flags when repo `AGENTS.md` is ignored;
+- validate and index after activation;
+- provide activation smoke-test output;
+- `agent-policy deactivate repo --repo . --dry-run`;
+- `agent-policy deactivate repo --repo . --restore`;
+- `agent-policy deactivate codex --global --dry-run`;
+- `agent-policy deactivate codex --global --restore`;
+- refuse to overwrite files changed after activation unless `--force` is provided.
+
+Activation and deactivation are mutating operations only when `--write` or `--restore` is supplied. Lookup, discovery, inspection, validation, and indexing must remain non-mutating.
+
+## Phase 6: Local retrieval index
 
 Goal: improve recall without sending repository data to a hosted service.
 
@@ -93,12 +122,12 @@ Planned capabilities:
 - local SQLite metadata index;
 - Tantivy full-text index stored as `fulltext/`;
 - index manifest with registry commit;
-- local index over policy files, nested instruction files, and selected documentation;
+- local index over policy files, nested instruction files, archived instructions, and selected documentation;
 - stale-index detection;
 - deduplication of overlapping instructions;
 - omission reporting for candidates excluded by the context budget.
 
-## Phase 6: Registry mode
+## Phase 7: Registry mode
 
 Goal: support shared policy registries while keeping the local CLI useful without hosted infrastructure.
 
@@ -113,7 +142,7 @@ Planned capabilities:
 
 Network clone/fetch can remain limited until registry cache behavior and provenance are stable.
 
-## Phase 7: BM25-assisted retrieval
+## Phase 8: BM25-assisted retrieval
 
 Planned capabilities:
 
@@ -123,7 +152,7 @@ Planned capabilities:
 - avoid raw search-result dumps into agent context;
 - report candidate counts and omissions.
 
-## Phase 8: Vector-assisted retrieval
+## Phase 9: Vector-assisted retrieval
 
 Planned capabilities:
 
@@ -133,18 +162,18 @@ Planned capabilities:
 - preserve metadata and policy priority as the authority;
 - avoid raw vector-search dumps into agent context.
 
-## Phase 9: PR and CI integration
+## Phase 10: PR and CI integration
 
 Planned capabilities:
 
 - GitHub Action example;
 - PR comment showing selected policies;
 - required checks derived from selected policy bundle;
-- policy drift detection for repos missing bootstrap files;
+- policy drift detection for repos missing bootstrap files or broker activation;
 - detection of stale or conflicting nested instruction files;
 - report candidate policies considered and omitted.
 
-## Phase 10: Optional local service and MCP server
+## Phase 11: Optional local service and MCP server
 
 Planned capabilities:
 
@@ -154,7 +183,7 @@ Planned capabilities:
 - expose selected policies as MCP resources;
 - support coding agents that prefer native tool calls over command execution.
 
-## Phase 11: Organization deployment patterns
+## Phase 12: Organization deployment patterns
 
 Future organization deployments may support:
 
@@ -162,7 +191,6 @@ Future organization deployments may support:
 - organization-wide vector or semantic index;
 - policy approvals;
 - audit logs;
-- SSO and RBAC;
 - multi-repo rollout;
 - analytics;
 - compliance reports;

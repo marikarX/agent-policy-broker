@@ -2,13 +2,15 @@
 
 Agent Policy Broker is designed as a context-budgeting policy engine for coding agents.
 
-The broker should answer one question:
+The broker should answer one runtime question:
 
 > Given this task intent and repository context, which compact instructions should the coding agent follow now?
 
 The broker should retrieve broadly, rank aggressively, and compile narrowly. The coding agent should receive concise instructions, not raw documentation dumps.
 
-## High-level design
+The broker also has an activation-time responsibility: it can help users move from scattered static instruction files to broker-managed instruction delivery by archiving existing instructions, importing or migrating useful guidance, replacing active instruction files with a small bootstrap, and providing a restore path.
+
+## High-level runtime design
 
 ```text
 Coding agent
@@ -33,6 +35,33 @@ Instruction bundle
 Coding agent applies instructions
 ```
 
+## Activation-time design
+
+Activation is explicit and separate from runtime lookup.
+
+```text
+Existing global or repo instruction files
+    |
+    | agent-policy inspect / migrate / activate
+    v
+Archive originals + manifest
+    |
+    v
+Broker-managed policy and supporting knowledge
+    |
+    v
+Small bootstrap instruction file
+    |
+    v
+agent-policy validate + index + smoke test
+```
+
+Activation commands should archive any instruction files they replace and write a manifest with enough information to restore the previous state. Deactivation uses that manifest to restore archived files and remove broker-created bootstraps when safe.
+
+Normal lookup commands such as `get`, `discover`, `inspect`, `validate`, and `index` must not rewrite instruction files. Mutations belong behind explicit commands such as `activate ... --write`, `migrate --write`, and `deactivate ... --restore`.
+
+See [Activation lifecycle](activation-lifecycle.md).
+
 ## Retrieval model
 
 Agent Policy Broker should use hybrid retrieval.
@@ -50,11 +79,13 @@ Layered instruction sources
   - editor-specific rules
   - repo-local .agent-policy policies
   - trust metadata that distinguishes reviewed sources from branch-controlled sources
+  - Git state metadata that distinguishes tracked, untracked, ignored, and local-only files
 
 Vector or semantic index
   - architecture docs
   - engineering handbook pages
   - old AGENTS.md / CLAUDE.md files
+  - archived instruction files
   - code review comments
   - incident postmortems
   - domain notes
@@ -77,13 +108,23 @@ The CLI is the first integration point. It should be simple enough for any codin
 
 Responsibilities:
 
-- parse task intent from flags or JSON
-- detect repository metadata
-- detect changed or relevant files when possible
-- discover applicable instruction files
-- call the local selector or remote service
-- print JSON or Markdown output
-- cache safe results when appropriate
+- parse task intent from flags or JSON;
+- detect repository metadata;
+- detect changed or relevant files when possible;
+- discover applicable instruction files;
+- classify instruction files by Git state when available;
+- call the local selector or remote service;
+- print JSON or Markdown output;
+- cache safe results when appropriate.
+
+Activation-specific responsibilities:
+
+- produce activation and deactivation dry-run plans;
+- archive instruction files before replacement;
+- write activation manifests;
+- generate broker bootstrap files;
+- restore archived files during deactivation;
+- refuse unsafe overwrites unless explicitly forced.
 
 ### Policy store
 
@@ -98,11 +139,13 @@ Examples:
 - domain policy: payments, auth, billing, search
 - risk policy: migrations, generated code, public API, secrets
 - repo policy: package manager, commands, directory layout
+- global user or operator policy imported during global activation
 
 ### Instruction source discovery
 
 The broker should discover existing path-scoped instruction files such as:
 
+- `AGENTS.override.md`
 - `AGENTS.md`
 - `CLAUDE.md`
 - `.github/copilot-instructions.md`
@@ -111,7 +154,26 @@ The broker should discover existing path-scoped instruction files such as:
 
 Nested instruction files should be associated with their directory scope. For example, `backend/payments/AGENTS.md` applies to `backend/payments/**` and should be considered when the task touches files under that path. Because these files can be changed by untrusted branches or pull requests, they should not override reviewed registry policy unless the source is explicitly marked trusted.
 
+Instruction discovery should also report whether sources are tracked, untracked, ignored, or local-only. Activation uses that metadata to avoid silently treating ignored local files as shared repo instructions.
+
 See [Instruction discovery and layered guidance](instruction-discovery.md) for details.
+
+### Activation manager
+
+The activation manager is responsible for planned mutating lifecycle operations.
+
+Responsibilities:
+
+- plan global Codex and repo activation;
+- import or migrate existing instruction content;
+- archive files before replacement;
+- write activation manifests;
+- create small broker bootstraps;
+- validate and index after activation;
+- restore archived files during deactivation;
+- report conflicts when current files changed after activation.
+
+Activation should be transactional where possible. If a step fails before writes, no files should change. If a step fails after writes, the command should print the restore command and archive location.
 
 ### Knowledge index
 
@@ -126,6 +188,7 @@ Examples:
 - domain explanations
 - API provider notes
 - legacy instruction files
+- archived instruction files
 
 The knowledge index is not the source of truth for final policy. It provides candidate evidence and context for the instruction compiler.
 
@@ -141,6 +204,7 @@ Potential context sources:
 - CI configuration
 - CODEOWNERS
 - existing `AGENTS.md` or `CLAUDE.md`
+- activation manifests and archive metadata
 - configured sensitive paths
 - generated-file maps
 - policy config files
@@ -226,7 +290,7 @@ Supported output formats should include:
 - JSON for tools and automation
 - Markdown for direct agent consumption
 
-## Recommended data flow
+## Recommended runtime data flow
 
 ```text
 Intent input
@@ -241,6 +305,23 @@ Intent input
   -> context budget application using trusted or safely clamped budget values
   -> instruction rendering
   -> audit metadata
+```
+
+## Recommended activation data flow
+
+```text
+Activation request
+  -> discover global or repo instruction sources
+  -> classify Git state and trust
+  -> compute activation plan
+  -> dry-run output or confirmation gate
+  -> archive originals and write manifest
+  -> import/migrate guidance into broker-managed policy or knowledge
+  -> write bootstrap files
+  -> validate
+  -> index
+  -> smoke-test lookup
+  -> print restore command
 ```
 
 ## Context budget
