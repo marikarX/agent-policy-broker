@@ -1,7 +1,9 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use agent_policy_config::{load_config, load_config_from_path, OutputBudgetConfig, RegistryConfig};
+use agent_policy_config::{
+    load_config, load_config_from_path, AgentPolicyConfig, OutputBudgetConfig, RegistryConfig,
+};
 use agent_policy_core::{
     build_instruction_bundle_with_bm25_candidates, load_policies_from_dirs,
     load_policies_from_registry, render_bundle_json, render_bundle_markdown, AppliesWhen,
@@ -50,16 +52,14 @@ pub(crate) fn build_instruction_bundle_for_get(
         .repo
         .as_deref()
         .unwrap_or_else(|| std::path::Path::new("."));
-    let config = match &global.config {
-        Some(path) => load_config_from_path(path)?,
-        None => load_config(repo)?,
-    };
+    let (config, config_warnings) = load_config_for_get(global, repo)?;
 
     let output_budget = effective_output_budget(&config.output_budget, global.config.is_some());
     let intent = build_task_intent(repo, args, &output_budget);
     let loaded = load_get_policies(repo, &config)?;
     let mut policies = loaded.policies;
-    let mut warnings = loaded.warnings;
+    let mut warnings = config_warnings;
+    warnings.extend(loaded.warnings);
     let discovered_sources = match args.instruction_mode {
         InstructionDiscoveryMode::Generic => discover(repo)?,
         InstructionDiscoveryMode::Codex => discover_codex(repo, codex_options(global, repo)?)?,
@@ -79,6 +79,31 @@ pub(crate) fn build_instruction_bundle_for_get(
     )?;
     bundle.warnings.extend(warnings);
     Ok(bundle)
+}
+
+fn load_config_for_get(
+    global: &GlobalArgs,
+    repo: &Path,
+) -> anyhow::Result<(AgentPolicyConfig, Vec<String>)> {
+    match &global.config {
+        Some(path) => Ok((load_config_from_path(path)?, Vec::new())),
+        None => match load_config(repo) {
+            Ok(config) => Ok((config, Vec::new())),
+            Err(error) if repository_config_attempts_trust_elevation(&error) => {
+                let warning = format!(
+                    "ignored unsafe repository config while building get bundle: {error:#}"
+                );
+                Ok((AgentPolicyConfig::default(), vec![warning]))
+            }
+            Err(error) => Err(error),
+        },
+    }
+}
+
+fn repository_config_attempts_trust_elevation(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}");
+    message.contains("must not configure registry")
+        || message.contains("must not configure instruction_sources.trusted")
 }
 
 fn effective_output_budget(
