@@ -6,8 +6,9 @@ DEMO_ROOT="${APB_DEMO_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/agent-policy-demo.XXXXX
 
 export XDG_CACHE_HOME="$DEMO_ROOT/cache"
 export CARGO_TARGET_DIR="$DEMO_ROOT/target"
+export CARGO_NET_OFFLINE=true
 
-APB=(cargo run -q -p agent-policy-cli --)
+APB=(cargo run --offline --locked -q -p agent-policy-cli --)
 
 cd "$ROOT_DIR"
 
