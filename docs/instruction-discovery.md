@@ -74,10 +74,12 @@ missing      no instruction source
 Suggested probes:
 
 ```bash
-git ls-files --error-unmatch AGENTS.md
-git check-ignore -v AGENTS.md
-git status --ignored --short AGENTS.md
+git ls-files --error-unmatch -- <path>
+git check-ignore -v -- <path>
+git status --ignored --short -- <path>
 ```
+
+Use the `--` pathspec separator before the discovered instruction path so repository-controlled paths that begin with `-` are never parsed as Git options. Treat any Git classification error as untrusted and fail closed: do not activate, merge, or report the file as shared repository policy until its state can be classified successfully.
 
 If `AGENTS.md` is already tracked, ignore rules do not affect it. If `AGENTS.md` is untracked and ignored, it should not be treated as shared repository policy by default.
 
