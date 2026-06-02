@@ -13,7 +13,11 @@ use agent_policy_core::{
 #[test]
 fn loads_multiple_policies_from_default_policy_tree() {
     let repo_dir = fixture_repo("payments-repo");
-    let policy_dir = repo_dir.join(".agent-policy").join("policies");
+    let policy_dir = repo_dir
+        .canonicalize()
+        .expect("canonical fixture repo")
+        .join(".agent-policy")
+        .join("policies");
 
     let loaded = load_policies_from_dirs(&repo_dir, [".agent-policy/policies"])
         .expect("default policy tree should load");
@@ -69,6 +73,34 @@ fn invalid_policy_reports_path_and_parse_error() {
     assert!(message.contains("failed to parse policy file"));
     assert!(message.contains("duplicate-b.yaml"));
     assert!(message.contains("retired"));
+}
+
+#[test]
+fn rejects_parent_traversal_policy_directory_escape() {
+    let temp = TempDir::new("agent-policy-core-parent-escape");
+    let repo_dir = temp.path().join("repo");
+    let escaped_dir = temp.path().join("escaped-policies");
+    fs::create_dir_all(&repo_dir).expect("create repo dir");
+    write_test_policy(&escaped_dir.join("escaped.yaml"), "repo.escape.parent");
+
+    let error = load_policies_from_dirs(&repo_dir, ["../escaped-policies"])
+        .expect_err("parent traversal should be rejected");
+
+    assert!(format!("{error:#}").contains("outside repository root"));
+}
+
+#[test]
+fn rejects_absolute_policy_directory_escape() {
+    let temp = TempDir::new("agent-policy-core-absolute-escape");
+    let repo_dir = temp.path().join("repo");
+    let escaped_dir = temp.path().join("absolute-escaped-policies");
+    fs::create_dir_all(&repo_dir).expect("create repo dir");
+    write_test_policy(&escaped_dir.join("escaped.yaml"), "repo.escape.absolute");
+
+    let error = load_policies_from_dirs(&repo_dir, [escaped_dir.as_path()])
+        .expect_err("absolute escape should be rejected");
+
+    assert!(format!("{error:#}").contains("outside repository root"));
 }
 
 #[test]
@@ -282,4 +314,16 @@ fn copy_dir_all_without_git(source: &Path, destination: &Path) -> std::io::Resul
         }
     }
     Ok(())
+}
+
+fn write_test_policy(path: &Path, id: &str) {
+    fs::create_dir_all(path.parent().expect("policy parent dir"))
+        .expect("create policy parent dir");
+    fs::write(
+        path,
+        format!(
+            "id: {id}\nversion: 1\nstatus: active\napplies_when: {{}}\ninstructions:\n  - Test policy instruction.\n"
+        ),
+    )
+    .expect("write policy");
 }

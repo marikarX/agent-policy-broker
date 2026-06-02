@@ -3,7 +3,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use anyhow::{bail, Context, Result};
@@ -12,6 +12,9 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use walkdir::WalkDir;
+
+const MAX_POLICY_WALK_ENTRIES: usize = 10_000;
+const MAX_POLICY_FILE_BYTES: u64 = 1024 * 1024;
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -1572,8 +1575,8 @@ where
     I: IntoIterator<Item = P>,
     P: AsRef<Path>,
 {
-    let repo_root = repo_root.as_ref();
-    let policy_files = collect_loadable_policy_files(repo_root, policy_dirs)?;
+    let repo_root = canonical_repo_root(repo_root.as_ref())?;
+    let policy_files = collect_loadable_policy_files(&repo_root, policy_dirs)?;
 
     policy_files
         .into_iter()
@@ -1606,8 +1609,9 @@ pub fn load_policies_from_registry(
         );
     }
 
-    let commit = detect_git_commit(registry_root)?;
-    let policy_files = collect_loadable_policy_files(registry_root, &options.policy_dirs)?;
+    let registry_root = canonical_repo_root(registry_root)?;
+    let commit = detect_git_commit(&registry_root)?;
+    let policy_files = collect_loadable_policy_files(&registry_root, &options.policy_dirs)?;
 
     policy_files
         .into_iter()
@@ -1632,7 +1636,10 @@ where
     let mut policy_files = Vec::new();
 
     for policy_dir in policy_dirs {
-        let policy_dir = resolve_policy_dir(repo_root, policy_dir.as_ref());
+        let policy_dir = match resolve_policy_dir(repo_root, policy_dir.as_ref())? {
+            Some(policy_dir) => policy_dir,
+            None => continue,
+        };
 
         if !policy_dir.exists() {
             continue;
@@ -1645,7 +1652,15 @@ where
             );
         }
 
-        for entry in WalkDir::new(&policy_dir) {
+        for (entry_count, entry) in WalkDir::new(&policy_dir).into_iter().enumerate() {
+            if entry_count >= MAX_POLICY_WALK_ENTRIES {
+                bail!(
+                    "policy directory {} exceeds traversal limit of {} entries",
+                    policy_dir.display(),
+                    MAX_POLICY_WALK_ENTRIES
+                );
+            }
+
             let entry = entry.with_context(|| {
                 format!("failed to walk policy directory {}", policy_dir.display())
             })?;
@@ -1683,16 +1698,40 @@ where
     I: IntoIterator<Item = P>,
     P: AsRef<Path>,
 {
-    let repo_root = repo_root.as_ref();
+    let repo_root = match canonical_repo_root(repo_root.as_ref()) {
+        Ok(repo_root) => repo_root,
+        Err(error) => {
+            return (
+                Vec::new(),
+                vec![PolicyValidationIssue {
+                    severity: PolicyValidationSeverity::Error,
+                    code: "repo_root_invalid",
+                    message: error.to_string(),
+                    path: None,
+                    field: None,
+                }],
+            );
+        }
+    };
     let mut policy_files = Vec::new();
     let mut issues = Vec::new();
 
     for policy_dir in policy_dirs {
-        let policy_dir = resolve_policy_dir(repo_root, policy_dir.as_ref());
-
-        if !policy_dir.exists() {
-            continue;
-        }
+        let policy_dir = match resolve_policy_dir(&repo_root, policy_dir.as_ref()) {
+            Ok(Some(policy_dir)) => policy_dir,
+            Ok(None) => continue,
+            Err(error) => {
+                push_policy_issue(
+                    &mut issues,
+                    PolicyValidationSeverity::Error,
+                    "policy_dir_escape",
+                    error.to_string(),
+                    Some(policy_dir.as_ref()),
+                    None,
+                );
+                continue;
+            }
+        };
 
         if !policy_dir.is_dir() {
             push_policy_issue(
@@ -1706,7 +1745,23 @@ where
             continue;
         }
 
-        for entry in WalkDir::new(&policy_dir) {
+        for (entry_count, entry) in WalkDir::new(&policy_dir).into_iter().enumerate() {
+            if entry_count >= MAX_POLICY_WALK_ENTRIES {
+                push_policy_issue(
+                    &mut issues,
+                    PolicyValidationSeverity::Error,
+                    "policy_dir_too_large",
+                    format!(
+                        "Policy directory {} exceeds traversal limit of {} entries.",
+                        policy_dir.display(),
+                        MAX_POLICY_WALK_ENTRIES
+                    ),
+                    Some(&policy_dir),
+                    None,
+                );
+                break;
+            }
+
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(error) => {
@@ -1740,6 +1795,35 @@ pub fn validate_policy_files(policy_files: &[PathBuf]) -> Vec<PolicyValidationIs
     let mut seen_ids: BTreeMap<String, PathBuf> = BTreeMap::new();
 
     for policy_file in policy_files {
+        match fs::metadata(policy_file) {
+            Ok(metadata) if metadata.len() > MAX_POLICY_FILE_BYTES => {
+                push_policy_issue(
+                    &mut issues,
+                    PolicyValidationSeverity::Error,
+                    "policy_file_too_large",
+                    format!(
+                        "Policy file exceeds size limit of {} bytes.",
+                        MAX_POLICY_FILE_BYTES
+                    ),
+                    Some(policy_file),
+                    None,
+                );
+                continue;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                push_policy_issue(
+                    &mut issues,
+                    PolicyValidationSeverity::Error,
+                    "policy_read_error",
+                    format!("Failed to stat policy file: {error}"),
+                    Some(policy_file),
+                    None,
+                );
+                continue;
+            }
+        }
+
         let raw = match fs::read_to_string(policy_file) {
             Ok(raw) => raw,
             Err(error) => {
@@ -1986,12 +2070,67 @@ fn push_policy_issue(
     });
 }
 
-fn resolve_policy_dir(repo_root: &Path, policy_dir: &Path) -> PathBuf {
-    if policy_dir.is_absolute() {
+fn canonical_repo_root(repo_root: &Path) -> Result<PathBuf> {
+    let repo_root = repo_root
+        .canonicalize()
+        .with_context(|| format!("failed to resolve repository root {}", repo_root.display()))?;
+
+    if !repo_root.is_dir() {
+        bail!("repository root {} is not a directory", repo_root.display());
+    }
+
+    Ok(repo_root)
+}
+
+fn resolve_policy_dir(repo_root: &Path, policy_dir: &Path) -> Result<Option<PathBuf>> {
+    let resolved = if policy_dir.is_absolute() {
         policy_dir.to_path_buf()
     } else {
         repo_root.join(policy_dir)
+    };
+
+    if resolved.exists() {
+        let canonical = resolved.canonicalize().with_context(|| {
+            format!("failed to resolve policy directory {}", resolved.display())
+        })?;
+        if !canonical.starts_with(repo_root) {
+            bail!(
+                "policy directory {} resolves outside repository root {}",
+                policy_dir.display(),
+                repo_root.display()
+            );
+        }
+
+        return Ok(Some(canonical));
     }
+
+    let normalized = normalize_path(&resolved);
+    if !normalized.starts_with(repo_root) {
+        bail!(
+            "policy directory {} escapes repository root {}",
+            policy_dir.display(),
+            repo_root.display()
+        );
+    }
+
+    Ok(None)
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
+        }
+    }
+
+    normalized
 }
 
 fn is_policy_file(path: &Path) -> bool {
@@ -2005,6 +2144,16 @@ fn read_yaml_file<T>(path: &Path) -> Result<T>
 where
     T: DeserializeOwned,
 {
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("failed to stat policy file {}", path.display()))?;
+    if metadata.len() > MAX_POLICY_FILE_BYTES {
+        bail!(
+            "policy file {} exceeds size limit of {} bytes",
+            path.display(),
+            MAX_POLICY_FILE_BYTES
+        );
+    }
+
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read policy file {}", path.display()))?;
     serde_yaml::from_str::<T>(&raw)
