@@ -149,11 +149,13 @@ The report should include:
 - discovered instruction files;
 - path scopes;
 - Git state for instruction files;
+- instruction references and hybrid layouts;
 - duplicated guidance;
 - conflicts;
 - migration candidates;
 - stale or overly broad guidance;
-- suggested policy targets.
+- suggested policy targets;
+- recommended activation strategy.
 
 ## `agent-policy migrate`
 
@@ -177,32 +179,42 @@ Generated policies should default to `status: draft`.
 
 ## `agent-policy activate`
 
-Activate broker-managed instruction delivery by archiving existing instruction files, importing or migrating useful guidance, and replacing the active instruction file with a small bootstrap.
+Activate broker-managed instruction delivery by archiving existing instruction files, importing or migrating useful guidance, and replacing, wrapping, or preserving active instruction files according to the selected activation strategy.
 
 Activation is planned, not part of the early MVP command set unless implemented by the current binary.
 
-Repo activation dry run:
+Planned command shape:
 
 ```bash
-agent-policy activate repo --repo . --dry-run
+agent-policy activate <agent> --repo . --dry-run
+agent-policy activate <agent> --repo . --write
+agent-policy activate <agent> --global --dry-run
+agent-policy activate <agent> --global --write
 ```
 
-Repo activation write:
+Initial agent adapters may include:
+
+```text
+codex
+claude
+copilot
+cursor
+gemini
+generic
+```
+
+Example repo activation:
 
 ```bash
-agent-policy activate repo --repo . --write
+agent-policy activate generic --repo . --dry-run
+agent-policy activate claude --repo . --strategy import-bridge --write
 ```
 
-Global Codex activation dry run:
+Example global activation:
 
 ```bash
 agent-policy activate codex --global --dry-run
-```
-
-Global Codex activation write:
-
-```bash
-agent-policy activate codex --global --write
+agent-policy activate gemini --global --write
 ```
 
 Planned flags:
@@ -210,7 +222,9 @@ Planned flags:
 ```text
 --dry-run                  Print the activation plan without writing files.
 --write                    Apply the activation plan.
---global                   Activate global agent instructions such as Codex home instructions.
+--repo <path>              Activate a repository checkout.
+--global                   Activate global agent instructions for the selected adapter.
+--strategy <strategy>      Activation strategy: native, shared, import-bridge, wrapper, global, local, or ci-comment.
 --archive-existing         Archive existing instruction files before replacement.
 --local                    Create a local-only ignored bootstrap when repo AGENTS.md is ignored.
 --force-track-bootstrap    Force-add a tracked repo bootstrap even when AGENTS.md is ignored.
@@ -220,11 +234,13 @@ Planned flags:
 Activation should:
 
 - discover existing instruction sources;
-- classify each source by path scope, trust, and Git state;
-- archive files before replacing them;
+- classify each source by adapter, path scope, trust, and Git state;
+- build an instruction reference graph for imports, references, wrappers, and symlinks;
+- recommend an activation strategy when one is not supplied;
+- archive files before replacing or wrapping them;
 - write an activation manifest;
 - generate or update broker-managed policy drafts when requested;
-- replace active instruction files with a small broker bootstrap;
+- replace, wrap, or preserve active instruction files according to the selected strategy;
 - validate and index the resulting configuration;
 - print a restore command.
 
@@ -238,29 +254,20 @@ Deactivate broker-managed instruction delivery and restore archived instruction 
 
 Deactivation is planned, not part of the early MVP command set unless implemented by the current binary.
 
-Repo deactivation dry run:
+Planned command shape:
 
 ```bash
-agent-policy deactivate repo --repo . --dry-run
-```
-
-Repo restore:
-
-```bash
-agent-policy deactivate repo --repo . --restore
+agent-policy deactivate <agent> --repo . --dry-run
+agent-policy deactivate <agent> --repo . --restore
+agent-policy deactivate <agent> --global --dry-run
+agent-policy deactivate <agent> --global --restore
 ```
 
 Restore a specific activation:
 
 ```bash
-agent-policy deactivate repo --repo . --activation act_2026_06_01_223000 --restore
-```
-
-Global Codex deactivation:
-
-```bash
-agent-policy deactivate codex --global --dry-run
-agent-policy deactivate codex --global --restore
+agent-policy deactivate generic --repo . --activation act_2026_06_01_223000 --restore
+agent-policy deactivate claude --repo . --activation act_2026_06_01_223000 --restore
 ```
 
 Planned flags:
@@ -277,8 +284,9 @@ Planned flags:
 Deactivation should:
 
 - find the activation manifest;
-- verify current files still match broker-managed bootstrap state where possible;
+- verify current files still match broker-managed bootstrap or wrapper state where possible;
 - restore archived files to their original paths;
+- restore, remove, or preserve wrapper/import files according to the manifest;
 - remove broker-created bootstrap files when safe;
 - leave generated policies and indexes in place unless explicit cleanup flags are supplied;
 - refuse to overwrite changed files unless `--force` is supplied.
