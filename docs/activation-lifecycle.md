@@ -316,11 +316,13 @@ If `AGENTS.md` is already tracked, ignore rules do not affect it.
 
 ## Archive layout
 
-Repo activation archives should live inside the repository by default:
+Activation archives must preserve the user's sharing intent for each instruction source. In particular, ignored and untracked repo instruction files are local-only or draft material and must not be copied into a repository path by default.
+
+Repo activation archives for tracked instruction sources may use a repository-local archive only after the command ensures the archive path is protected from accidental staging, for example by creating or verifying an ignore rule for `.agent-policy/archive/` before writing archive contents:
 
 ```text
 .agent-policy/
-  archive/
+  archive/                 ignored before any files are written here
     activations/
       2026-06-01T22-30-00Z/
         manifest.json
@@ -330,20 +332,35 @@ Repo activation archives should live inside the repository by default:
           CLAUDE.md
 ```
 
-Global activation archives should live outside the repository, for example:
+Repo activation archives that contain ignored, untracked, or otherwise local-only instruction sources must live outside the repository by default, for example:
 
 ```text
 ~/.config/agent-policy/
   archive/
-    activations/
-      2026-06-01T22-30-00Z/
-        manifest.json
-        files/
-          AGENTS.md
-          AGENTS.override.md
+    repos/
+      example-repo/
+        activations/
+          2026-06-01T22-30-00Z/
+            manifest.json
+            files/
+              AGENTS.md
 ```
 
-Archive locations should be configurable. Archives are provenance and rollback material; they should not be deleted automatically.
+Global activation archives should also live outside the repository, for example:
+
+```text
+~/.config/agent-policy/
+  archive/
+    global/
+      activations/
+        2026-06-01T22-30-00Z/
+          manifest.json
+          files/
+            AGENTS.md
+            AGENTS.override.md
+```
+
+Archive locations should be configurable. A request to place local-only archive contents inside the repository must require an explicit opt-in flag, a warning that the contents may become visible to other users, CI, or remote agents, and a verified ignore rule for the chosen archive path before any archive file is written. Archives are provenance and rollback material; they should not be deleted automatically.
 
 ## Manifest schema
 
