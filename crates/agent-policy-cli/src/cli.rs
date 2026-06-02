@@ -1455,20 +1455,20 @@ instructions:
     #[test]
     fn migrate_write_rejects_symlinked_migration_directory_component() {
         use std::os::unix::fs::symlink;
-    
+
         let temp = TempRepo::copy_fixture("nested-instructions");
         let repo = temp.path();
-    
+
         let agent_policy_dir = repo.join(".agent-policy");
         if agent_policy_dir.exists() {
             fs::remove_dir_all(&agent_policy_dir).expect("remove existing .agent-policy dir");
         }
-    
+
         let outside_dir = repo.join("outside-agent-policy");
         fs::create_dir(&outside_dir).expect("create outside dir");
-    
+
         symlink(&outside_dir, &agent_policy_dir).expect("create .agent-policy symlink");
-    
+
         let cli = Cli::try_parse_from([
             "agent-policy",
             "--repo",
@@ -1479,7 +1479,7 @@ instructions:
             "json",
         ])
         .expect("parse migrate write");
-        
+
         let error = run(cli).expect_err("symlinked .agent-policy must be rejected");
         assert!(
             error
@@ -1487,7 +1487,7 @@ instructions:
                 .contains("refusing to use symlinked migration directory component .agent-policy"),
             "unexpected error: {error:#}"
         );
-    
+
         assert!(!outside_dir.join("migration").exists());
     }
 
