@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -382,18 +382,31 @@ fn write_private_file(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
 #[cfg(unix)]
 fn secure_existing_path(path: &Path) -> anyhow::Result<()> {
     let metadata =
-        fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
-    let mode = if metadata.is_dir() { 0o700 } else { 0o600 };
-    fs::set_permissions(path, fs::Permissions::from_mode(mode))
-        .with_context(|| format!("failed to set permissions on {}", path.display()))?;
+        fs::symlink_metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
+    let file_type = metadata.file_type();
+    if file_type.is_symlink() {
+        return Ok(());
+    }
 
     if metadata.is_dir() {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("failed to set permissions on {}", path.display()))?;
         for entry in fs::read_dir(path)
             .with_context(|| format!("failed to read directory {}", path.display()))?
         {
             let entry = entry?;
+            if entry
+                .file_type()
+                .with_context(|| format!("failed to stat {}", entry.path().display()))?
+                .is_symlink()
+            {
+                continue;
+            }
             secure_existing_path(&entry.path())?;
         }
+    } else if metadata.is_file() && metadata.nlink() == 1 {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("failed to set permissions on {}", path.display()))?;
     }
 
     Ok(())
