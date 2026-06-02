@@ -382,6 +382,7 @@ fn build_instruction_bundle_inner(
         let source = policy_source_ref(matched_policy.loaded);
         let mut included_policy_content = false;
         let mut conflict_omitted_policy_content = false;
+        let has_instruction_content = !policy.instructions.is_empty();
 
         for instruction in &policy.instructions {
             if conflict_resolution
@@ -413,6 +414,13 @@ fn build_instruction_bundle_inner(
                 source: source.clone(),
                 reason: matched_policy.reason.clone(),
             });
+        }
+
+        if has_instruction_content && !included_policy_content {
+            if !conflict_omitted_policy_content {
+                omitted += 1;
+                continue;
+            }
         }
 
         for check in &policy.required_checks {
